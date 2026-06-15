@@ -44,9 +44,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0          # full history so Gitleaks can diff
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Use the open-source gitleaks BINARY (MIT) via its official image.
+      # The gitleaks-ACTION wrapper requires a paid GITLEAKS_LICENSE for orgs;
+      # the binary does not. --redact hides secret values in logs.
+      - name: Gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            detect --source=/repo --redact -v
 
   # ---- BLOCKING: SAST -------------------------------------------------------
   sast-scan:
@@ -69,13 +73,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Run the pinned official OSV-Scanner image directly. Avoids the action
+      # wrapper (whose tag had no valid action.yml) and the SARIF upload path
+      # that would otherwise require GitHub Advanced Security on private repos.
+      # Recursive scan; non-zero exit on any known vulnerability blocks the PR.
       - name: OSV-Scanner
-        uses: google/osv-scanner-action@v1.9.1
-        with:
-          # Recursively scan the repo; non-zero exit on any known vulnerability.
-          scan-args: |-
-            --recursive
-            ./
+        run: |
+          docker run --rm -v "$PWD:/src" ghcr.io/google/osv-scanner:v1.9.1 \
+            --recursive /src
 
   # ---- NON-BLOCKING to start: GitHub Actions workflow security -------------
   # Split into two independent jobs so they run in parallel. actionlint catches
