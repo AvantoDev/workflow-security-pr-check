@@ -1,0 +1,65 @@
+# Reusable, SELF-CONTAINED Shai-Hulud supply-chain guard. Ref: SEC-2026-051501.
+# Invoked org-wide as a BLOCKING job of the central pr-security.yml pipeline
+# (Approach C: org ruleset "require workflows to pass"). No per-repo caller stub.
+# Runs in the TARGET repo's context, so its own checkout pulls the PR head.
+# Self-contained (inline IOCs) so it needs no cross-repo fetch — works for private repos.
+name: shai-hulud-guard (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      all-branches:
+        description: Scan every branch (true) or just the checked-out ref (false).
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # bound the run so a hang can't wedge a required-check merge gate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ inputs.all-branches && 0 || 1 }}
+      - name: Shai-Hulud IOC scan
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Family marker + decoder + this campaign's hardcoded C2 wallets + generic eval-of-blob.
+          PATTERNS=(
+            '5-3-343'
+            '_\$_913e'
+            "global\.i='5-3-343'"
+            "global\['_V'\]"
+            'TCqf6ZkaQD84vYsC2cuu1jRwB6JveTaRrF'
+            'TFMryB9m6d4kBMRjEVyFRbqKSV1cV2NcpH'
+            '0x9d202c824402ca89e9aaccd2390b6f8b332ae743caa1469c695feb2781d56519'
+            '0x3d2075f97b7b1e3234bd653779d21c605d7d8c6ec9c98d983880be5c7f4f9471'
+            'eval[[:space:]]*\([[:space:]]*atob'
+            'eval[[:space:]]*\([[:space:]]*"[^"]*"[[:space:]]*\+[[:space:]]*atob'
+            'eval[[:space:]]*\([[:space:]]*Buffer\.from'
+          )
+          PATHSPEC=(':(glob)**/*.js' ':(glob)**/*.cjs' ':(glob)**/*.mjs' ':(glob)**/*.ts' ':(glob)**/*.tsx' ':(glob)**/*.jsx')
+          if [ "${{ inputs.all-branches }}" = "true" ]; then
+            REFS=$(git for-each-ref --format='%(refname)' refs/heads refs/remotes)
+          else
+            REFS=""
+          fi
+          hits=0
+          scan_ref() {
+            local ref="$1" p
+            for p in "${PATTERNS[@]}"; do
+              while IFS= read -r line; do
+                [ -n "$line" ] && { echo "::error::SHAI-HULUD IOC: ${ref:+[$ref] }$line"; hits=$((hits+1)); }
+              done < <(git grep -InIE -e "$p" ${ref:+"$ref"} -- "${PATHSPEC[@]}" 2>/dev/null)
+            done
+          }
+          if [ -z "$REFS" ]; then scan_ref ""; else for r in $REFS; do scan_ref "$r"; done; fi
+          if [ "$hits" -gt 0 ]; then
+            echo "❌ BLOCKED: $hits Shai-Hulud indicator(s). See SEC-2026-051501."; exit 1
+          fi
+          echo "✅ shai-hulud-guard: clean."
