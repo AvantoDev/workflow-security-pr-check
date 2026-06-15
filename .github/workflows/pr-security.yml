@@ -1,17 +1,132 @@
+# .github/workflows/pr-security.yml
+# Lives in the CENTRAL repo (workflow-security-pr-check) and is invoked
+# org-wide by the "Require workflows to pass before merging" ruleset.
+#
+# Notes:
+# - The ruleset IGNORES on: filters (branches/paths/types) and always runs this
+#   on the default activity types of the events below. Keep on: minimal.
+# - Secrets resolve from the TARGET repo's context. Put SEMGREP/SONAR tokens as
+#   ORGANIZATION secrets so every repo's run can read them.
+# - Blocking vs. non-blocking is controlled per-job via continue-on-error.
+#   Start strict where signal is high (secrets), soft where it's noisy (lint),
+#   then promote jobs to blocking as you tune.
+
 name: PR Security Pipeline
 
 on:
   pull_request:
+  # Add pull_request_target ONLY if you accept external fork PRs and need the
+  # failure-comment to post on them. It runs in the base-repo context with
+  # secrets, so never check out & execute untrusted PR code under it.
+  # pull_request_target:
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
 
 jobs:
-  security-check:
+  # ---- BLOCKING: supply-chain (Shai-Hulud IOCs) ----------------------------
+  # Self-contained reusable guard kept in this central repo. Referenced by full
+  # repo path so it always resolves here regardless of the target repo the
+  # ruleset runs this pipeline in. Ref: SEC-2026-051501.
+  shai-hulud-guard:
+    name: Supply-chain (Shai-Hulud)
+    uses: AvantoDev/workflow-security-pr-check/.github/workflows/shai-hulud-guard.yml@main
+    permissions:
+      contents: read
+
+  # ---- BLOCKING: secrets ----------------------------------------------------
+  secrets-scan:
+    name: Secrets (Gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - name: Run security checks (placeholder)
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history so Gitleaks can diff
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---- BLOCKING: SAST -------------------------------------------------------
+  sast-scan:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    container: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - run: semgrep ci
+        env:
+          SEMGREP_RULES: "p/security-audit p/secrets p/owasp-top-ten"
+          # Optional: set as an org secret to send findings to Semgrep Cloud.
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # ---- BLOCKING: dependencies (SCA) — multi-ecosystem ----------------------
+  # OSV-Scanner auto-detects lockfiles across npm, PyPI, Go, Cargo, Maven/Gradle,
+  # RubyGems, Composer, NuGet, etc. — so non-JS/Python repos aren't left unscanned.
+  sca-scan:
+    name: Dependencies (OSV-Scanner)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: OSV-Scanner
+        uses: google/osv-scanner-action@v1.9.1
+        with:
+          # Recursively scan the repo; non-zero exit on any known vulnerability.
+          scan-args: |-
+            --recursive
+            ./
+
+  # ---- NON-BLOCKING to start: GitHub Actions workflow security -------------
+  # Split into two independent jobs so they run in parallel. actionlint catches
+  # workflow syntax/expression errors; zizmor audits for Actions-specific
+  # security issues (injection, unpinned actions, over-broad permissions,
+  # credential leaks). Warn-only to start; promote once tuned.
+  actionlint:
+    name: Actions lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: raven-actions/actionlint@v2
+        continue-on-error: true   # warn-only; remove to make blocking
+
+  zizmor:
+    name: Actions security (zizmor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: zizmor
         run: |
-          echo "Pipeline ran on PR: ${{ github.event.pull_request.html_url }}"
-          if [[ "${{ github.event.pull_request.title }}" == *"FAILTEST"* ]]; then
-            echo "::error::Simulated failure (FAILTEST in title)"
-            exit 1
-          fi
-          echo "All checks passed"
+          pipx install zizmor
+          zizmor --persona=regular .github/workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true   # warn-only; remove to make blocking
+
+  # ---- NON-BLOCKING to start: Dockerfile lint ------------------------------
+  dockerfile-lint:
+    name: Dockerfile (Hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hadolint
+        if: ${{ hashFiles('**/Dockerfile') != '' }}
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: error
+        continue-on-error: true   # warn-only; remove this line to make it block
+
+  # ---- Failure comment ------------------------------------------------------
+  comment-on-failure:
+    name: Comment on failure
+    runs-on: ubuntu-latest
+    needs: [shai-hulud-guard, secrets-scan, sast-scan, sca-scan]
+    if: failure()
+    steps:
+      - uses: mshick/add-pr-comment@v2
+        with:
+          message: |
+            ## 🚨 Security Pipeline Failed
+            One or more **required** security checks failed on this PR.
+            Open the **Checks** tab for details. Merge is blocked until they pass.
