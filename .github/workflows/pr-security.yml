@@ -77,6 +77,29 @@ jobs:
             --recursive
             ./
 
+  # ---- NON-BLOCKING to start: malicious dependency BEHAVIOR (Socket) -------
+  # Goes beyond known-CVE SCA: flags install scripts, obfuscated code, new
+  # network/filesystem/shell access, and typosquats in dependencies — i.e. the
+  # Shai-Hulud attack class. Gated on the org var so repos without a Socket
+  # API key configured don't fail. Warn-only to start; promote once tuned.
+  malicious-deps:
+    name: Malicious deps (Socket)
+    runs-on: ubuntu-latest
+    if: ${{ vars.SOCKET_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Socket behavior scan
+        run: |
+          pip install socketsecurity
+          socketcli --repo "$GITHUB_REPOSITORY" --pr-number "${{ github.event.pull_request.number }}"
+        env:
+          SOCKET_SECURITY_API_KEY: ${{ secrets.SOCKET_SECURITY_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true   # warn-only; remove to make blocking
+
   # ---- NON-BLOCKING to start: GitHub Actions workflow security -------------
   # Split into two independent jobs so they run in parallel. actionlint catches
   # workflow syntax/expression errors; zizmor audits for Actions-specific
