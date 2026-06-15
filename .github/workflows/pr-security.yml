@@ -1,0 +1,17 @@
+name: PR Security Pipeline
+
+on:
+  pull_request:
+
+jobs:
+  security-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run security checks (placeholder)
+        run: |
+          echo "Pipeline ran on PR: ${{ github.event.pull_request.html_url }}"
+          if [[ "${{ github.event.pull_request.title }}" == *"FAILTEST"* ]]; then
+            echo "::error::Simulated failure (FAILTEST in title)"
+            exit 1
+          fi
+          echo "All checks passed"
