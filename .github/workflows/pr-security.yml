@@ -65,7 +65,7 @@ jobs:
           # Optional: set as an org secret to send findings to Semgrep Cloud.
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
-  # ---- NON-BLOCKING to start: dependencies (SCA) — multi-ecosystem ---------
+  # ---- BLOCKING (PR-diff): dependencies (SCA) — multi-ecosystem ------------
   # OSV-Scanner auto-detects lockfiles across npm, PyPI, Go, Cargo, Maven/Gradle,
   # RubyGems, Composer, NuGet, etc. — so non-JS/Python repos aren't left unscanned.
   # Runs in PR-DIFF mode: scans the PR base and head commits, then fails ONLY on
@@ -104,10 +104,27 @@ jobs:
               "$file" 2>/dev/null | sort -u
           }
 
+          # A repo-root osv-scanner.toml lets a repo deliberately ignore a
+          # specific advisory (e.g. a still-vulnerable dep with no fix yet).
+          # SECURITY: the ignore config is resolved from the BASE (trusted,
+          # already-merged) commit ONLY — never from PR head. Otherwise a PR
+          # could introduce a vuln AND self-approve its own ignore in the same
+          # change, bypassing the gate. New ignore entries must therefore be
+          # merged to the base branch first (passing review) before they apply.
+          # Passed explicitly with --config because auto-detection isn't
+          # reliable across a recursive multi-directory scan.
+          cfg_mount=() cfg_arg=()
+          if git show "$BASE_SHA:osv-scanner.toml" > "${RUNNER_TEMP:-/tmp}/osv-base.toml" 2>/dev/null; then
+            cfg_mount=(-v "${RUNNER_TEMP:-/tmp}/osv-base.toml:/config/osv-scanner.toml:ro")
+            cfg_arg=(--config /config/osv-scanner.toml)
+            echo "OSV-Scanner: applying ignore config from base commit's osv-scanner.toml"
+          fi
+
           scan() {
             local sha="$1" out="$2"
             git checkout "$sha" -q
-            docker run --rm -v "$PWD:/src" ghcr.io/google/osv-scanner:v1.9.1 \
+            docker run --rm -v "$PWD:/src" "${cfg_mount[@]}" \
+              ghcr.io/google/osv-scanner:v1.9.1 "${cfg_arg[@]}" \
               --recursive --format json /src > "$out" || true
           }
 
@@ -126,7 +143,6 @@ jobs:
             exit 1
           fi
           echo "OSV-Scanner: no newly-introduced vulnerable dependencies."
-        continue-on-error: true   # warn-only; remove to make blocking
 
   # ---- NON-BLOCKING to start: GitHub Actions workflow security -------------
   # Split into two independent jobs so they run in parallel. actionlint catches
@@ -172,7 +188,7 @@ jobs:
   comment-on-failure:
     name: Comment on failure
     runs-on: ubuntu-latest
-    needs: [shai-hulud-guard, secrets-scan, sast-scan]
+    needs: [shai-hulud-guard, secrets-scan, sast-scan, sca-scan]
     if: failure()
     steps:
       - uses: mshick/add-pr-comment@v2
