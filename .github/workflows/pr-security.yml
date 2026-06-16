@@ -111,8 +111,6 @@ jobs:
           # could introduce a vuln AND self-approve its own ignore in the same
           # change, bypassing the gate. New ignore entries must therefore be
           # merged to the base branch first (passing review) before they apply.
-          # Passed explicitly with --config because auto-detection isn't
-          # reliable across a recursive multi-directory scan.
           cfg_mount=() cfg_arg=()
           if git show "$BASE_SHA:osv-scanner.toml" > "${RUNNER_TEMP:-/tmp}/osv-base.toml" 2>/dev/null; then
             cfg_mount=(-v "${RUNNER_TEMP:-/tmp}/osv-base.toml:/config/osv-scanner.toml:ro")
@@ -122,7 +120,13 @@ jobs:
 
           scan() {
             local sha="$1" out="$2"
-            git checkout "$sha" -q
+            git checkout -f "$sha" -q
+            # SECURITY: OSV-Scanner AUTO-LOADS any osv-scanner.toml found in the
+            # scanned tree, independent of --config. Delete all in-tree configs
+            # after checkout so an untrusted ignore list from the PR head can
+            # never auto-apply; the only ignores honored are the base config
+            # supplied via --config above.
+            find . -name osv-scanner.toml -type f -delete
             docker run --rm -v "$PWD:/src" "${cfg_mount[@]}" \
               ghcr.io/google/osv-scanner:v1.9.1 "${cfg_arg[@]}" \
               --recursive --format json /src > "$out" || true
