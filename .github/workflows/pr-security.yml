@@ -68,22 +68,64 @@ jobs:
   # ---- NON-BLOCKING to start: dependencies (SCA) — multi-ecosystem ---------
   # OSV-Scanner auto-detects lockfiles across npm, PyPI, Go, Cargo, Maven/Gradle,
   # RubyGems, Composer, NuGet, etc. — so non-JS/Python repos aren't left unscanned.
-  # Warn-only to start: it exits non-zero on ANY known vuln, including pre-existing
-  # low-severity ones the PR didn't touch, which would otherwise block every PR.
-  # Promote to blocking (remove continue-on-error) once the debt is triaged, or
-  # switch to PR-diff mode to block only newly-introduced vulns.
+  # Runs in PR-DIFF mode: scans the PR base and head commits, then fails ONLY on
+  # vulns newly introduced by this PR (keys present at head but not at base) — so
+  # pre-existing debt doesn't block every PR. We still avoid the SARIF upload path
+  # that would otherwise require GitHub Advanced Security (GHAS) on private repos.
   sca-scan:
     name: Dependencies (OSV-Scanner)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history so we can check out base + head
       # Run the pinned official OSV-Scanner image directly. Avoids the action
       # wrapper (whose tag had no valid action.yml) and the SARIF upload path
       # that would otherwise require GitHub Advanced Security on private repos.
-      - name: OSV-Scanner
+      # SHAs are passed via env (not interpolated into the script) to keep
+      # zizmor/actionlint happy and avoid any template-injection vector.
+      - name: OSV-Scanner (PR diff)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          docker run --rm -v "$PWD:/src" ghcr.io/google/osv-scanner:v1.9.1 \
-            --recursive /src
+          set -uo pipefail
+
+          # Extract a stable vuln key set from an OSV-Scanner JSON report:
+          #   id|package-name|package-version  (sorted, unique)
+          # Missing/empty file yields empty output (fail-safe: base treated as
+          # having no vulns, so everything at head looks "new").
+          vuln_keys() {
+            local file="$1"
+            [ -s "$file" ] || return 0
+            jq -r '.results[]?.packages[]? as $p
+                   | $p.vulnerabilities[]?.id
+                   | "\(.)|\($p.package.name)|\($p.package.version)"' \
+              "$file" 2>/dev/null | sort -u
+          }
+
+          scan() {
+            local sha="$1" out="$2"
+            git checkout "$sha" -q
+            docker run --rm -v "$PWD:/src" ghcr.io/google/osv-scanner:v1.9.1 \
+              --recursive --format json /src > "$out" || true
+          }
+
+          scan "$BASE_SHA" base.json
+          scan "$HEAD_SHA" head.json
+
+          vuln_keys base.json > base.txt
+          vuln_keys head.json > head.txt
+
+          # Keys in head but not in base = newly-introduced vulnerable deps.
+          comm -13 base.txt head.txt > new.txt
+
+          if [ -s new.txt ]; then
+            echo "::error::OSV-Scanner: this PR introduces new vulnerable dependencies:"
+            cat new.txt
+            exit 1
+          fi
+          echo "OSV-Scanner: no newly-introduced vulnerable dependencies."
         continue-on-error: true   # warn-only; remove to make blocking
 
   # ---- NON-BLOCKING to start: GitHub Actions workflow security -------------
