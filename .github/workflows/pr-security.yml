@@ -65,7 +65,7 @@ jobs:
           # Optional: set as an org secret to send findings to Semgrep Cloud.
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
-  # ---- NON-BLOCKING to start: dependencies (SCA) — multi-ecosystem ---------
+  # ---- BLOCKING (PR-diff): dependencies (SCA) — multi-ecosystem ------------
   # OSV-Scanner auto-detects lockfiles across npm, PyPI, Go, Cargo, Maven/Gradle,
   # RubyGems, Composer, NuGet, etc. — so non-JS/Python repos aren't left unscanned.
   # Runs in PR-DIFF mode: scans the PR base and head commits, then fails ONLY on
@@ -126,7 +126,6 @@ jobs:
             exit 1
           fi
           echo "OSV-Scanner: no newly-introduced vulnerable dependencies."
-        continue-on-error: true   # warn-only; remove to make blocking
 
   # ---- NON-BLOCKING to start: GitHub Actions workflow security -------------
   # Split into two independent jobs so they run in parallel. actionlint catches
@@ -172,7 +171,7 @@ jobs:
   comment-on-failure:
     name: Comment on failure
     runs-on: ubuntu-latest
-    needs: [shai-hulud-guard, secrets-scan, sast-scan]
+    needs: [shai-hulud-guard, secrets-scan, sast-scan, sca-scan]
     if: failure()
     steps:
       - uses: mshick/add-pr-comment@v2
