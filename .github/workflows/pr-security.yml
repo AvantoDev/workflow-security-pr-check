@@ -104,11 +104,18 @@ jobs:
               "$file" 2>/dev/null | sort -u
           }
 
+          # A repo-root osv-scanner.toml lets a repo deliberately ignore a
+          # specific advisory (e.g. a still-vulnerable dep with no fix yet).
+          # Passed explicitly with --config because auto-detection isn't
+          # reliable across a recursive multi-directory scan. The file is
+          # read from whichever commit is checked out, so an ignore added in
+          # the PR head suppresses that vuln from the "new" set.
           scan() {
-            local sha="$1" out="$2"
+            local sha="$1" out="$2" cfg=()
             git checkout "$sha" -q
+            [ -f osv-scanner.toml ] && cfg=(--config /src/osv-scanner.toml)
             docker run --rm -v "$PWD:/src" ghcr.io/google/osv-scanner:v1.9.1 \
-              --recursive --format json /src > "$out" || true
+              "${cfg[@]}" --recursive --format json /src > "$out" || true
           }
 
           scan "$BASE_SHA" base.json
