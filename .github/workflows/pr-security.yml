@@ -106,16 +106,26 @@ jobs:
 
           # A repo-root osv-scanner.toml lets a repo deliberately ignore a
           # specific advisory (e.g. a still-vulnerable dep with no fix yet).
+          # SECURITY: the ignore config is resolved from the BASE (trusted,
+          # already-merged) commit ONLY — never from PR head. Otherwise a PR
+          # could introduce a vuln AND self-approve its own ignore in the same
+          # change, bypassing the gate. New ignore entries must therefore be
+          # merged to the base branch first (passing review) before they apply.
           # Passed explicitly with --config because auto-detection isn't
-          # reliable across a recursive multi-directory scan. The file is
-          # read from whichever commit is checked out, so an ignore added in
-          # the PR head suppresses that vuln from the "new" set.
+          # reliable across a recursive multi-directory scan.
+          cfg_mount=() cfg_arg=()
+          if git show "$BASE_SHA:osv-scanner.toml" > "${RUNNER_TEMP:-/tmp}/osv-base.toml" 2>/dev/null; then
+            cfg_mount=(-v "${RUNNER_TEMP:-/tmp}/osv-base.toml:/config/osv-scanner.toml:ro")
+            cfg_arg=(--config /config/osv-scanner.toml)
+            echo "OSV-Scanner: applying ignore config from base commit's osv-scanner.toml"
+          fi
+
           scan() {
-            local sha="$1" out="$2" cfg=()
+            local sha="$1" out="$2"
             git checkout "$sha" -q
-            [ -f osv-scanner.toml ] && cfg=(--config /src/osv-scanner.toml)
-            docker run --rm -v "$PWD:/src" ghcr.io/google/osv-scanner:v1.9.1 \
-              "${cfg[@]}" --recursive --format json /src > "$out" || true
+            docker run --rm -v "$PWD:/src" "${cfg_mount[@]}" \
+              ghcr.io/google/osv-scanner:v1.9.1 "${cfg_arg[@]}" \
+              --recursive --format json /src > "$out" || true
           }
 
           scan "$BASE_SHA" base.json
