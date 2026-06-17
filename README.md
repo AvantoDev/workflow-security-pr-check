@@ -157,6 +157,14 @@ it has been merged to the base branch** (i.e. after passing review + the gate it
 > If you add the dependency and the ignore in the **same** PR, the gate will **still block**
 > — by design. Split them into two PRs.
 
+### Gitleaks allowlists follow the same rule
+
+Gitleaks supports a `.gitleaks.toml` `[allowlist]` to suppress specific secret findings.
+The pipeline applies the **exact same security model**: the gitleaks config is read from
+the **base commit only**, and any in-tree `.gitleaks.toml` is deleted before scanning so a
+PR's own allowlist can't auto-apply. To allowlist a finding, merge the `.gitleaks.toml`
+change to the base branch **first** (separate PR), then the suppression takes effect.
+
 ---
 
 ## Required org secrets & variables

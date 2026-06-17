@@ -59,9 +59,24 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          docker run --rm -v "$PWD:/repo" -e BASE_SHA -e HEAD_SHA \
+          set -uo pipefail
+          # SECURITY: gitleaks AUTO-LOADS .gitleaks.toml from the scanned tree,
+          # which on the PR head is UNTRUSTED. A PR could add a secret AND a
+          # .gitleaks.toml allowlist suppressing it — the same self-approval
+          # bypass we closed for osv-scanner.toml. So we resolve the gitleaks
+          # config from the BASE (trusted, already-merged) commit ONLY, and
+          # delete any in-tree config so the head's cannot auto-load. New
+          # allowlist entries must be merged to the base branch first.
+          cfg_mount=() cfg_arg=()
+          if git show "$BASE_SHA:.gitleaks.toml" > "${RUNNER_TEMP:-/tmp}/gitleaks-base.toml" 2>/dev/null; then
+            cfg_mount=(-v "${RUNNER_TEMP:-/tmp}/gitleaks-base.toml:/config/.gitleaks.toml:ro")
+            cfg_arg=(--config /config/.gitleaks.toml)
+            echo "Gitleaks: applying allowlist config from base commit's .gitleaks.toml"
+          fi
+          find . \( -name '.gitleaks.toml' -o -name 'gitleaks.toml' \) -type f -delete
+          docker run --rm -v "$PWD:/repo" "${cfg_mount[@]}" -e BASE_SHA -e HEAD_SHA \
             ghcr.io/gitleaks/gitleaks:v8.21.2 \
-            detect --source=/repo --redact -v \
+            detect --source=/repo --redact -v "${cfg_arg[@]}" \
             --log-opts="--no-merges ${BASE_SHA}..${HEAD_SHA}"
 
   # ---- BLOCKING: SAST -------------------------------------------------------
