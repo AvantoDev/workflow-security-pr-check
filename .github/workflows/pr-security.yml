@@ -43,14 +43,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # full history so Gitleaks can diff
+          fetch-depth: 0          # need base + head commits to scan the PR range
       # Use the open-source gitleaks BINARY (MIT) via its official image.
       # The gitleaks-ACTION wrapper requires a paid GITLEAKS_LICENSE for orgs;
       # the binary does not. --redact hides secret values in logs.
-      - name: Gitleaks
+      #
+      # PERF: scan ONLY the commits this PR introduces (base..head) via
+      # --log-opts, instead of the entire repo history on every PR. This makes
+      # the job diff-aware (like OSV/Semgrep) so its cost scales with PR size,
+      # not repo age. SHAs are passed via env (not interpolated) for safety.
+      # NOTE: a secret already committed in history is NOT re-scanned here — run
+      # scripts/gitleaks-baseline.sh once per repo to catch legacy secrets.
+      - name: Gitleaks (PR diff)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 \
-            detect --source=/repo --redact -v
+          docker run --rm -v "$PWD:/repo" -e BASE_SHA -e HEAD_SHA \
+            ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            detect --source=/repo --redact -v \
+            --log-opts="--no-merges ${BASE_SHA}..${HEAD_SHA}"
 
   # ---- BLOCKING: SAST -------------------------------------------------------
   sast-scan:
