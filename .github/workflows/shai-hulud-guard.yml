@@ -1,15 +1,35 @@
-# Reusable, SELF-CONTAINED Shai-Hulud supply-chain guard. Ref: SEC-2026-051501.
+# Reusable malware / IOC guard for the Shai-Hulud worm family and the 2026
+# VS Code auto-run variants that followed it.
 # Invoked org-wide as a BLOCKING job of the central pr-security.yml pipeline
 # (Approach C: org ruleset "require workflows to pass"). No per-repo caller stub.
-# Runs in the TARGET repo's context, so its own checkout pulls the PR head.
-# Self-contained (inline IOCs) so it needs no cross-repo fetch — works for private repos.
+# Runs in the TARGET repo's context, so its own checkout pulls the PR merge result.
+#
+# ── 2026-08-09 rewrite. Two coverage gaps closed ─────────────────────────────
+# 1. EXTENSION SCOPE. The previous inline scan matched only
+#    *.js/*.cjs/*.mjs/*.ts/*.tsx/*.jsx. This worm family ships its dropper as a
+#    binary-looking asset (e.g. a `.woff2` font) and launches it from
+#    `.vscode/tasks.json` — so neither the payload nor its launcher was ever
+#    opened, even when the payload contained patterns the guard already knew.
+#    An extension allowlist is the wrong shape for this threat; the scan now
+#    reads every tracked text file and checks asset extensions by magic bytes.
+#
+# 2. DIFF VS TREE. This family also uses merge commits whose tree carries the
+#    payload while both parents are clean, which any diff-based or
+#    `--no-merges` scan steps over. Detection is now tree-based.
+#
+# Detection lives in scripts/tree-ioc-scan.sh so it can be tested and run
+# locally, instead of being embedded in YAML where neither is possible.
 name: shai-hulud-guard (reusable)
 
 on:
   workflow_call:
     inputs:
       all-branches:
-        description: Scan every branch (true) or just the checked-out ref (false).
+        # DEPRECATED and ignored since 2026-08-09. Kept declared so any existing
+        # caller passing it does not fail. Per-branch sweeps are not a PR gate's
+        # job -- a PR can only merge its own head -- and are handled separately by
+        # the org-wide inventory tooling.
+        description: "DEPRECATED — ignored. Use the org-wide bare-inventory scan for branch sweeps."
         required: false
         default: false
         type: boolean
@@ -24,42 +44,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: ${{ inputs.all-branches && 0 || 1 }}
-      - name: Shai-Hulud IOC scan
+          # Full history is required: the false-positive allowlist is resolved
+          # from the BASE commit, and `git show <base>:...` cannot reach it at
+          # depth 1. At depth 1 the allowlist silently resolves to empty — which
+          # fails in the SAFE direction (no suppressions) but would surface as
+          # mystery blocks that nobody can switch off.
+          fetch-depth: 0
+          persist-credentials: false
+      # Fetch the scanner from THIS repo (the central one) rather than the target
+      # repo being scanned, whose head is untrusted PR content. Pinned to the
+      # same ref this reusable workflow was called at.
+      - name: Fetch scanner from the central repo
+        uses: actions/checkout@v4
+        with:
+          repository: AvantoDev/workflow-security-pr-check
+          ref: main
+          path: .security-tooling
+          persist-credentials: false
+
+      # Resolve the false-positive allowlist from the BASE commit only, matching
+      # the convention already used here for osv-scanner.toml and .gitleaks.toml.
+      # A pull request must not be able to introduce a finding AND approve its own
+      # suppression in the same change.
+      - name: Resolve allowlist from base
+        id: allow
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -uo pipefail
-          # Family marker + decoder + this campaign's hardcoded C2 wallets + generic eval-of-blob.
-          PATTERNS=(
-            '5-3-343'
-            '_\$_913e'
-            "global\.i='5-3-343'"
-            "global\['_V'\]"
-            'TCqf6ZkaQD84vYsC2cuu1jRwB6JveTaRrF'
-            'TFMryB9m6d4kBMRjEVyFRbqKSV1cV2NcpH'
-            '0x9d202c824402ca89e9aaccd2390b6f8b332ae743caa1469c695feb2781d56519'
-            '0x3d2075f97b7b1e3234bd653779d21c605d7d8c6ec9c98d983880be5c7f4f9471'
-            'eval[[:space:]]*\([[:space:]]*atob'
-            'eval[[:space:]]*\([[:space:]]*"[^"]*"[[:space:]]*\+[[:space:]]*atob'
-            'eval[[:space:]]*\([[:space:]]*Buffer\.from'
-          )
-          PATHSPEC=(':(glob)**/*.js' ':(glob)**/*.cjs' ':(glob)**/*.mjs' ':(glob)**/*.ts' ':(glob)**/*.tsx' ':(glob)**/*.jsx')
-          if [ "${{ inputs.all-branches }}" = "true" ]; then
-            REFS=$(git for-each-ref --format='%(refname)' refs/heads refs/remotes)
+          out="${RUNNER_TEMP:-/tmp}/security-allowlist"
+          : > "$out"
+          if [ -n "${BASE_SHA:-}" ] && git show "$BASE_SHA:.security-allowlist" > "$out" 2>/dev/null; then
+            echo "allowlist: using .security-allowlist from base commit ($(grep -cve '^\s*$' "$out") entr(y|ies))"
           else
-            REFS=""
+            echo "allowlist: none on the base branch — scanning with no suppressions"
           fi
-          hits=0
-          scan_ref() {
-            local ref="$1" p
-            for p in "${PATTERNS[@]}"; do
-              while IFS= read -r line; do
-                [ -n "$line" ] && { echo "::error::SHAI-HULUD IOC: ${ref:+[$ref] }$line"; hits=$((hits+1)); }
-              done < <(git grep -InIE -e "$p" ${ref:+"$ref"} -- "${PATHSPEC[@]}" 2>/dev/null)
-            done
-          }
-          if [ -z "$REFS" ]; then scan_ref ""; else for r in $REFS; do scan_ref "$r"; done; fi
-          if [ "$hits" -gt 0 ]; then
-            echo "❌ BLOCKED: $hits Shai-Hulud indicator(s). See SEC-2026-051501."; exit 1
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      # TREE-based, not diff-based. This family uses evil merges: the payload
+      # lives in the merge tree while both parents are clean, so any diff- or
+      # --no-merges-based scan finds nothing. On `pull_request`, checkout gives us
+      # the merge result, which is exactly what would land on the base branch.
+      - name: Malware / IOC scan (tree-based)
+        shell: bash
+        env:
+          ALLOWLIST: ${{ steps.allow.outputs.path }}
+        run: |
+          set -uo pipefail
+          bash .security-tooling/scripts/tree-ioc-scan.sh --allowlist "$ALLOWLIST" .
+          rc=$?
+          # 0 clean · 1 confirmed indicator · 3 internal error. 3 must BLOCK — a
+          # scanner that suppresses its own errors and still reports clean produces
+          # a confident false all-clear, the worst outcome a security gate has.
+          if [ "$rc" = "3" ]; then
+            echo "::error::scanner failed internally — failing closed rather than passing unverified"
           fi
-          echo "✅ shai-hulud-guard: clean."
+          exit "$rc"

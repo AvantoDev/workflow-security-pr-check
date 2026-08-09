@@ -117,6 +117,62 @@ soft where it's noisy (lint), then promote as findings are tuned.
 
 ---
 
+## Malware / IOC guard (`scripts/tree-ioc-scan.sh`)
+
+The blocking **Malware / IOC guard** job scans for the Shai-Hulud worm family and the 2026
+VS Code auto-run variants. Two properties are worth understanding, because both were coverage
+gaps in the previous version of this guard:
+
+**It is tree-based, not diff-based.** This family uses *evil merges* — merge commits whose
+tree carries the payload while **both parents are clean**. Any scan that diffs a commit
+against its parent, or passes `--no-merges`, steps straight over it. On a `pull_request`,
+GitHub checks out the **merge result**, so scanning the tree sees exactly what would land on
+the base branch. (The Gitleaks job gained a second `--no-git` pass over the merge result for
+the same reason.)
+
+**It has no extension allowlist.** The previous guard matched only `*.js`/`*.ts`-family files.
+This malware ships its dropper as a binary-looking asset — JavaScript named `.woff2` — and
+launches it from `.vscode/tasks.json`, so **neither the payload nor its launcher was ever
+opened**, even though the dropper contained patterns the guard already knew. The scan now
+reads every tracked text file, and verifies asset extensions by **magic bytes** rather than
+trusting the filename.
+
+### What it blocks
+
+| Finding | Why it blocks |
+|---|---|
+| A text/script file wearing a binary extension (`.woff2`, `.png`, `.pdf`…) | The delivery mechanism. Detected structurally, so a variant with a different filename is still caught. |
+| `.vscode/tasks.json` with `runOn: folderOpen` **and** a piped remote fetch, or **and** executing an asset-extension file | Executes on folder open. Nothing legitimate runs a font as code. |
+| `.vscode/settings.json` committing `task.allowAutomaticTasks` | Removes the confirmation prompt for **everyone** who opens the repo. A per-developer choice, never a repository setting. |
+| `.vscode/settings.json` committing `security.workspace.trust.enabled: false` | Disables the control that stops untrusted folders executing tasks. |
+| Campaign IOC strings in any tracked text file | No legitimate use. |
+
+A `folderOpen` task whose command is local and non-asset (e.g. `npm run build`) is a
+**warning**, not a block — but a reviewer should confirm what it runs.
+
+### Suppressing a false positive
+
+Add the path to **`.security-allowlist`** at the repo root, one glob or literal path per line
+(`#` comments allowed):
+
+```
+public/img/placeholder.png    # git-lfs pointer, not a real PNG
+```
+
+Same security model as `osv-scanner.toml` above: the allowlist is read **only from the base
+commit**, never from the PR head, so a change cannot introduce a finding *and* approve its own
+suppression. **Merge the allowlist entry first, in its own PR.**
+
+### Exit codes and fail-closed behaviour
+
+`0` clean · `1` confirmed indicator (blocks) · **`3` internal error, which also blocks.**
+A scanner that suppresses its own errors and still reports clean produces a confident false
+all-clear — the worst outcome a security gate can have. Run it locally the same way CI does:
+
+```bash
+bash scripts/tree-ioc-scan.sh --allowlist .security-allowlist .
+```
+
 ## How to bypass / ignore a dependency finding
 
 Sometimes a PR must ship with a dependency that has a known, unfixed advisory (no patch
