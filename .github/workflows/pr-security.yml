@@ -32,13 +32,9 @@ jobs:
   # ruleset runs this pipeline in. Ref: SEC-2026-051501.
   shai-hulud-guard:
     name: Malware / IOC guard (tree-based)
-    # TEMPORARY (revert to @main before merge): points at this PR's branch so the
-    # new guard is actually exercised in CI instead of merged untested.
-    uses: AvantoDev/workflow-security-pr-check/.github/workflows/shai-hulud-guard.yml@security/tree-based-ioc-guard
+    uses: AvantoDev/workflow-security-pr-check/.github/workflows/shai-hulud-guard.yml@main
     permissions:
       contents: read
-    with:
-      tooling-ref: security/tree-based-ioc-guard
 
   # ---- BLOCKING: secrets ----------------------------------------------------
   secrets-scan:
