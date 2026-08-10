@@ -89,10 +89,56 @@ jobs:
           # above steps straight over it. Scanning the checked-out merge result
           # with --no-git catches whatever would actually land on the base branch,
           # regardless of which commit introduced it.
+          #
+          # SCOPE: findings are then filtered to the files THIS PR touches
+          # (base..head, added/copied/modified/renamed). Reporting on untouched
+          # files made every pre-existing finding block every PR in the repo,
+          # including PRs unrelated to the flagged file — and that included the
+          # allowlist-first PR the base-only config rule above requires you to
+          # land before introducing a file. The base-only rule stays exactly as
+          # it is: allowlist in one PR, introduce the file in the next. Evil-merge coverage is
+          # unaffected: content a merge commit carries in its tree still shows up
+          # in `git diff base..head`, which compares TREES, not commit ancestry.
+          # Legacy findings on untouched files are handled by the one-time
+          # scripts/gitleaks-baseline.sh sweep, not by blocking unrelated PRs.
           echo "Gitleaks: second pass over the merge result (evil-merge coverage)"
-          docker run --rm -v "$PWD:/repo" "${cfg_mount[@]}" \
+          git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" \
+            > "${RUNNER_TEMP:-/tmp}/changed.txt" || :
+          rm -f "${RUNNER_TEMP:-/tmp}/tree.json"
+          docker run --rm -v "$PWD:/repo" -v "${RUNNER_TEMP:-/tmp}:/report" "${cfg_mount[@]}" \
             ghcr.io/gitleaks/gitleaks:v8.21.2 \
-            detect --source=/repo --redact -v --no-git "${cfg_arg[@]}" || rc=1
+            detect --source=/repo --redact -v --no-git "${cfg_arg[@]}" \
+            --report-format json --report-path /report/tree.json && rc2=0 || rc2=$?
+
+          # gitleaks exits 0 (clean) or 1 (leaks found); anything else is a
+          # scanner/runtime error, which must fail closed rather than pass.
+          if [ "$rc2" -gt 1 ]; then
+            echo "::error::Gitleaks: tree pass failed to run (exit $rc2)."
+            rc=1
+          fi
+
+          # Fail only on findings whose File is in this PR's changed set.
+          # `.File` is repo-relative in gitleaks' JSON report, matching git diff.
+          if [ -s "${RUNNER_TEMP:-/tmp}/tree.json" ]; then
+            jq --rawfile changed "${RUNNER_TEMP:-/tmp}/changed.txt" '
+              ($changed | split("\n") | map(select(length > 0))) as $ch
+              | map(select(.File as $f | $ch | index($f)))
+            ' "${RUNNER_TEMP:-/tmp}/tree.json" > "${RUNNER_TEMP:-/tmp}/tree-scoped.json"
+
+            n=$(jq 'length' "${RUNNER_TEMP:-/tmp}/tree-scoped.json")
+            total=$(jq 'length' "${RUNNER_TEMP:-/tmp}/tree.json")
+            echo "Gitleaks: tree pass found $total finding(s); $n in files this PR changes."
+            if [ "$n" -gt 0 ]; then
+              # --redact was set on the scan, so Secret/Match are already masked.
+              jq -r '.[] | "::error file=\(.File),line=\(.StartLine)::[\(.RuleID)] \(.Description)"' \
+                "${RUNNER_TEMP:-/tmp}/tree-scoped.json"
+              rc=1
+            fi
+          elif [ "$rc2" -eq 1 ]; then
+            # Leaks reported but no readable report — cannot scope them, so block.
+            echo "::error::Gitleaks: tree pass reported findings but wrote no report."
+            rc=1
+          fi
 
           exit "$rc"
 
