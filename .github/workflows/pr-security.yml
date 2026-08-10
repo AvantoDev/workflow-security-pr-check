@@ -102,8 +102,14 @@ jobs:
           # Legacy findings on untouched files are handled by the one-time
           # scripts/gitleaks-baseline.sh sweep, not by blocking unrelated PRs.
           echo "Gitleaks: second pass over the merge result (evil-merge coverage)"
-          git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" \
-            > "${RUNNER_TEMP:-/tmp}/changed.txt" || :
+          # -z: NUL-delimited and UNQUOTED. Without it git quotes paths holding
+          # newlines/specials, which would never match the report's raw .File and
+          # would silently drop a real finding on an attacker-named file.
+          if ! git diff -z --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" \
+               > "${RUNNER_TEMP:-/tmp}/changed.txt"; then
+            echo "::error::Gitleaks: could not compute the PR's changed files."
+            exit 1
+          fi
           rm -f "${RUNNER_TEMP:-/tmp}/tree.json"
           docker run --rm -v "$PWD:/repo" -v "${RUNNER_TEMP:-/tmp}:/report" "${cfg_mount[@]}" \
             ghcr.io/gitleaks/gitleaks:v8.21.2 \
@@ -118,15 +124,27 @@ jobs:
           fi
 
           # Fail only on findings whose File is in this PR's changed set.
-          # `.File` is repo-relative in gitleaks' JSON report, matching git diff.
+          # NOTE: with --source=/repo, gitleaks reports .File as the FULL scanned
+          # path ("/repo/src/x.py"), not repo-relative — verified against
+          # v8.21.2. Strip the mount prefix before comparing, or nothing ever
+          # matches and every finding is silently dropped (fail-open).
           if [ -s "${RUNNER_TEMP:-/tmp}/tree.json" ]; then
-            jq --rawfile changed "${RUNNER_TEMP:-/tmp}/changed.txt" '
-              ($changed | split("\n") | map(select(length > 0))) as $ch
-              | map(select(.File as $f | $ch | index($f)))
-            ' "${RUNNER_TEMP:-/tmp}/tree.json" > "${RUNNER_TEMP:-/tmp}/tree-scoped.json"
+            if ! jq --rawfile changed "${RUNNER_TEMP:-/tmp}/changed.txt" '
+                   ($changed | split("\u0000") | map(select(length > 0))) as $ch
+                   | map(.File |= sub("^/repo/"; ""))
+                   | map(select(.File as $f | $ch | index($f)))
+                 ' "${RUNNER_TEMP:-/tmp}/tree.json" \
+                 > "${RUNNER_TEMP:-/tmp}/tree-scoped.json"; then
+              echo "::error::Gitleaks: could not filter the tree report to the PR diff."
+              exit 1
+            fi
 
-            n=$(jq 'length' "${RUNNER_TEMP:-/tmp}/tree-scoped.json")
-            total=$(jq 'length' "${RUNNER_TEMP:-/tmp}/tree.json")
+            n=$(jq 'length' "${RUNNER_TEMP:-/tmp}/tree-scoped.json") || n=""
+            total=$(jq 'length' "${RUNNER_TEMP:-/tmp}/tree.json") || total=""
+            if [ -z "$n" ] || [ -z "$total" ]; then
+              echo "::error::Gitleaks: could not read the tree report."
+              exit 1
+            fi
             echo "Gitleaks: tree pass found $total finding(s); $n in files this PR changes."
             if [ "$n" -gt 0 ]; then
               # --redact was set on the scan, so Secret/Match are already masked.
