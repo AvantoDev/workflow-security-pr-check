@@ -31,7 +31,7 @@ jobs:
   # repo path so it always resolves here regardless of the target repo the
   # ruleset runs this pipeline in. Ref: SEC-2026-051501.
   shai-hulud-guard:
-    name: Supply-chain (Shai-Hulud)
+    name: Malware / IOC guard (tree-based)
     uses: AvantoDev/workflow-security-pr-check/.github/workflows/shai-hulud-guard.yml@main
     permissions:
       contents: read
@@ -41,7 +41,7 @@ jobs:
     name: Secrets (Gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0          # need base + head commits to scan the PR range
       # Use the open-source gitleaks BINARY (MIT) via its official image.
@@ -74,10 +74,27 @@ jobs:
             echo "Gitleaks: applying allowlist config from base commit's .gitleaks.toml"
           fi
           find . \( -name '.gitleaks.toml' -o -name 'gitleaks.toml' \) -type f -delete
+
+          rc=0
+          # Pass 1 — the commit range. `--no-merges` keeps this cheap and avoids
+          # re-reporting the same secret once per side of every merge.
           docker run --rm -v "$PWD:/repo" "${cfg_mount[@]}" -e BASE_SHA -e HEAD_SHA \
             ghcr.io/gitleaks/gitleaks:v8.21.2 \
             detect --source=/repo --redact -v "${cfg_arg[@]}" \
-            --log-opts="--no-merges ${BASE_SHA}..${HEAD_SHA}"
+            --log-opts="--no-merges ${BASE_SHA}..${HEAD_SHA}" || rc=1
+
+          # Pass 2 — the RESULTING TREE. This closes an evil-merge hole seen in
+          # the wild with this worm family: a merge commit can carry content in
+          # its tree while BOTH parents are clean, so `--no-merges`
+          # above steps straight over it. Scanning the checked-out merge result
+          # with --no-git catches whatever would actually land on the base branch,
+          # regardless of which commit introduced it.
+          echo "Gitleaks: second pass over the merge result (evil-merge coverage)"
+          docker run --rm -v "$PWD:/repo" "${cfg_mount[@]}" \
+            ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            detect --source=/repo --redact -v --no-git "${cfg_arg[@]}" || rc=1
+
+          exit "$rc"
 
   # ---- BLOCKING: SAST -------------------------------------------------------
   sast-scan:
@@ -85,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     container: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - run: semgrep ci
         env:
           SEMGREP_RULES: "p/security-audit p/secrets p/owasp-top-ten"
@@ -103,7 +120,7 @@ jobs:
     name: Dependencies (OSV-Scanner)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0          # full history so we can check out base + head
       # Run the pinned official OSV-Scanner image directly. Avoids the action
@@ -184,15 +201,15 @@ jobs:
     name: Actions lint (actionlint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: raven-actions/actionlint@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7  # v2
         continue-on-error: true   # warn-only; remove to make blocking
 
   zizmor:
     name: Actions security (zizmor)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: zizmor
         run: |
           pipx install zizmor
@@ -206,10 +223,10 @@ jobs:
     name: Dockerfile (Hadolint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Hadolint
         if: ${{ hashFiles('**/Dockerfile') != '' }}
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf  # v3.1.0
         with:
           dockerfile: Dockerfile
           failure-threshold: error
@@ -222,7 +239,7 @@ jobs:
     needs: [shai-hulud-guard, secrets-scan, sast-scan, sca-scan]
     if: failure()
     steps:
-      - uses: mshick/add-pr-comment@v2
+      - uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc  # v2
         with:
           message: |
             ## 🚨 Security Pipeline Failed
