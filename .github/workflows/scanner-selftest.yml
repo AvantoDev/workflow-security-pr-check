@@ -63,6 +63,16 @@ jobs:
           [ -r "$S" ] || { echo "::error::scanner not found at $S"; exit 1; }
           pass=0; fail=0
 
+          # IOC strings needed by the fixtures below, assembled from fragments so
+          # that THIS FILE never contains one as a contiguous literal. Per the
+          # header note: a committed fixture carrying real IOC text would be
+          # flagged by the guard itself on every subsequent PR — and this repo is
+          # scanned by that guard. String concatenation is invisible to grep but
+          # exact at runtime.
+          MARKER="5-3""-343"
+          TRON="TCqf6ZkaQD84vYsC2""cuu1jRwB6JveTaRrF"
+          DECODE_EXEC="eval(""atob(...))"          # the construct as docs write it
+
           # Each case builds a throwaway git repo, runs the scanner, and compares
           # the exit code against what that case must produce.
           #   0 = clean · 1 = confirmed indicator · 3 = internal error
@@ -128,7 +138,7 @@ jobs:
           # exemption becomes the hiding place.
           check "payload beside the vendored guard still blocks" 1 '
             mkdir -p security/shai-hulud-guard
-            printf "var x=\x275-3-343\x27\n" > security/shai-hulud-guard/evil.js'
+            printf "var x=\x27$MARKER\x27\n" > security/shai-hulud-guard/evil.js'
 
           echo
           echo "── MUST PASS (false-positive guards) ───────────────────────"
@@ -162,10 +172,10 @@ jobs:
           # Security documentation naming the construct. This is how incident
           # reports, runbooks and repo audits refer to the payload, and it is the
           # single largest source of false positives this gate has produced.
-          check "docs quoting eval(atob(...)) in prose" 0 '
+          check "docs quoting the decode-execute construct" 0 '
             mkdir -p docs
-            printf "The payload was an obfuscated eval(atob(...)) blob behind ~1000 spaces.\n" > docs/incident.md
-            printf "Detect with: grep -rn eval(atob dist/\n" >> docs/incident.md'
+            printf "The payload was an obfuscated $DECODE_EXEC blob behind ~1000 spaces.\n" > docs/incident.md
+            printf "Detect with: grep -rn $DECODE_EXEC dist/\n" >> docs/incident.md'
 
           # Decoding base64 is ordinary work. Only decode-plus-execute is an IOC;
           # flagging every atob() call would make the gate unusable.
@@ -177,15 +187,15 @@ jobs:
           # scanner, its hook and its runbooks are IOC lists by construction.
           check "repo vendoring the shai-hulud-guard toolkit" 0 '
             mkdir -p security/shai-hulud-guard/history-purge
-            printf "IOCS=(\x275-3-343\x27 \x27TCqf6ZkaQD84vYsC2cuu1jRwB6JveTaRrF\x27)\n" > security/shai-hulud-guard/scan-shai-hulud.sh
-            printf "PATTERNS=(\x275-3-343\x27)\n" > security/shai-hulud-guard/pre-commit
-            printf "Marker: 5-3-343\n" > security/shai-hulud-guard/README.md
-            printf "regex:global\.i=\x275-3-343\x27==>\n" > security/shai-hulud-guard/history-purge/shai-hulud-replace.txt'
+            printf "IOCS=(\x27$MARKER\x27 \x27$TRON\x27)\n" > security/shai-hulud-guard/scan-shai-hulud.sh
+            printf "PATTERNS=(\x27$MARKER\x27)\n" > security/shai-hulud-guard/pre-commit
+            printf "Marker: $MARKER\n" > security/shai-hulud-guard/README.md
+            printf "regex:global\.i=\x27$MARKER\x27==>\n" > security/shai-hulud-guard/history-purge/shai-hulud-replace.txt'
 
           # The callable guard workflow, as it is named in consuming repos.
           check "vendored shai-hulud-guard.reusable.yml" 0 '
             mkdir -p .github/workflows
-            printf "          \x275-3-343\x27\n          \x27TCqf6ZkaQD84vYsC2cuu1jRwB6JveTaRrF\x27\n" > .github/workflows/shai-hulud-guard.reusable.yml'
+            printf "          \x27$MARKER\x27\n          \x27$TRON\x27\n" > .github/workflows/shai-hulud-guard.reusable.yml'
 
           check "empty repository" 0 'printf "x\n" > README.md'
 
