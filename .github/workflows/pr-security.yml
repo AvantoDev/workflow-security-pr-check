@@ -32,16 +32,20 @@ jobs:
   # ruleset runs this pipeline in. Ref: SEC-2026-051501.
   shai-hulud-guard:
     name: Malware / IOC guard (tree-based)
-    uses: AvantoDev/workflow-security-pr-check/.github/workflows/shai-hulud-guard.yml@main
+    # TEMPORARY (revert to @main before merge): points at this PR's branch so the
+    # new guard is actually exercised in CI instead of merged untested.
+    uses: AvantoDev/workflow-security-pr-check/.github/workflows/shai-hulud-guard.yml@security/tree-based-ioc-guard
     permissions:
       contents: read
+    with:
+      tooling-ref: security/tree-based-ioc-guard
 
   # ---- BLOCKING: secrets ----------------------------------------------------
   secrets-scan:
     name: Secrets (Gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0          # need base + head commits to scan the PR range
       # Use the open-source gitleaks BINARY (MIT) via its official image.
@@ -102,7 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     container: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - run: semgrep ci
         env:
           SEMGREP_RULES: "p/security-audit p/secrets p/owasp-top-ten"
@@ -120,7 +124,7 @@ jobs:
     name: Dependencies (OSV-Scanner)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0          # full history so we can check out base + head
       # Run the pinned official OSV-Scanner image directly. Avoids the action
@@ -201,15 +205,15 @@ jobs:
     name: Actions lint (actionlint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: raven-actions/actionlint@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7  # v2
         continue-on-error: true   # warn-only; remove to make blocking
 
   zizmor:
     name: Actions security (zizmor)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: zizmor
         run: |
           pipx install zizmor
@@ -223,10 +227,10 @@ jobs:
     name: Dockerfile (Hadolint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Hadolint
         if: ${{ hashFiles('**/Dockerfile') != '' }}
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf  # v3.1.0
         with:
           dockerfile: Dockerfile
           failure-threshold: error
@@ -239,7 +243,7 @@ jobs:
     needs: [shai-hulud-guard, secrets-scan, sast-scan, sca-scan]
     if: failure()
     steps:
-      - uses: mshick/add-pr-comment@v2
+      - uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc  # v2
         with:
           message: |
             ## 🚨 Security Pipeline Failed

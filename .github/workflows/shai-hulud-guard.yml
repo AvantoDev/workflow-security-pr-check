@@ -33,6 +33,16 @@ on:
         required: false
         default: false
         type: boolean
+      tooling-ref:
+        # Ref of THIS repo to fetch the scanner from. Defaults to main, which is
+        # what production uses. Exists so a PR that changes the scanner can point
+        # at its own branch and actually exercise the new code in CI — otherwise
+        # `uses: ...@main` means a change to this workflow is merged untested,
+        # which is not acceptable for a gate that is required on every repo.
+        description: Ref of workflow-security-pr-check to load the scanner from.
+        required: false
+        default: main
+        type: string
 
 permissions:
   contents: read
@@ -42,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # bound the run so a hang can't wedge a required-check merge gate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           # Full history is required: the false-positive allowlist is resolved
           # from the BASE commit, and `git show <base>:...` cannot reach it at
@@ -55,10 +65,10 @@ jobs:
       # repo being scanned, whose head is untrusted PR content. Pinned to the
       # same ref this reusable workflow was called at.
       - name: Fetch scanner from the central repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           repository: AvantoDev/workflow-security-pr-check
-          ref: main
+          ref: ${{ inputs.tooling-ref }}
           path: .security-tooling
           persist-credentials: false
 
