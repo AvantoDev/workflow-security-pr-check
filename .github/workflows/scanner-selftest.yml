@@ -51,8 +51,16 @@ jobs:
       - name: Run fixture matrix
         shell: bash
         run: |
+          # GitHub invokes run: blocks as `bash -e -o pipefail`. Every case here
+          # deliberately captures a NON-ZERO exit code from the scanner, so with
+          # errexit on, the first must-block case kills the whole step before it
+          # can print anything. Disable it explicitly; failures are counted and
+          # exited on at the end instead. (Found by this workflow's first CI run,
+          # which passed locally because a plain `bash script.sh` has no -e.)
+          set +e
           set -uo pipefail
           S="$PWD/scripts/tree-ioc-scan.sh"
+          [ -r "$S" ] || { echo "::error::scanner not found at $S"; exit 1; }
           pass=0; fail=0
 
           # Each case builds a throwaway git repo, runs the scanner, and compares
@@ -165,6 +173,7 @@ jobs:
       - name: Assert --allowlist flag suppresses a finding
         shell: bash
         run: |
+          set +e            # same reason as above: non-zero exits are the data here
           set -uo pipefail
           d="$(mktemp -d)"; cd "$d"
           git init -q .; git config user.email t@example.com; git config user.name t
