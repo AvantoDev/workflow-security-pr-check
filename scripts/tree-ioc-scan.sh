@@ -106,8 +106,23 @@ CONFIRMED_IOCS=(
   #
   # Requiring the pair keeps the true positive and drops the noise. `.` never
   # crosses a newline in grep, so the 80-char window stays on one line.
-  "eval[[:space:]]*\(.{0,80}atob[[:space:]]*\([[:space:]]*['\"][A-Za-z0-9+/]{32,}"
-  "eval[[:space:]]*\(.{0,80}Buffer\.from[[:space:]]*\([[:space:]]*['\"][A-Za-z0-9+/]{32,}"
+  #
+  # The quote class includes a backtick (template literals) and the charset
+  # includes `-_` (base64url), because a one-character encoding change must not
+  # defeat the pattern — see the "Detect the SHAPE, not just the sample" rule
+  # above.
+  "eval[[:space:]]*\(.{0,80}atob[[:space:]]*\([[:space:]]*['\"\`][A-Za-z0-9+/_-]{32,}"
+  "eval[[:space:]]*\(.{0,80}Buffer\.from[[:space:]]*\([[:space:]]*['\"\`][A-Za-z0-9+/_-]{32,}"
+  # …and the same construct with the payload held in a VARIABLE rather than
+  # inline, which the two literal patterns above cannot see:
+  #     var p='<base64>';eval(atob(p))
+  #     eval(Buffer.from(p,'base64'))
+  #     eval(atob(decodeURIComponent(p)))
+  # Decoding straight into `eval` has no legitimate use regardless of where the
+  # argument comes from. Requiring an IDENTIFIER character after the paren —
+  # rather than `.` — is what keeps prose `eval(atob(...))` and `eval(atob())`
+  # clean, so this restores the coverage without reintroducing the noise.
+  'eval[[:space:]]*\([[:space:]]*(atob|Buffer\.from)[[:space:]]*\([[:space:]]*[A-Za-z_$]'
   'Shai-Hulud: Here We Go Again'
 )
 
@@ -155,8 +170,10 @@ SELF_TOOLING_PATHS=(
   # `.reusable.yml` matters: the callable workflow in consuming repos is named
   # shai-hulud-guard.reusable.yml, and the previous `shai-hulud-guard\.ya?ml$`
   # could not match it — the guard's own pattern list blocked every PR in any
-  # repo that vendored it.
-  'shai-hulud-guard(\.reusable)?\.ya?ml'
+  # repo that vendored it. Anchored to .github/workflows/ so the exemption
+  # cannot be claimed by a file that merely borrows the name: a payload at
+  # src/vendor/shai-hulud-guard.reusable.yml is still scanned.
+  '\.github/workflows/shai-hulud-guard(\.reusable)?\.ya?ml'
   'pr-security\.ya?ml'
   '\.security-allowlist'
   # The shai-hulud-guard toolkit vendored into product repos: a scanner, a

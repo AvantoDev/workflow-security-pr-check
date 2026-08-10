@@ -72,6 +72,12 @@ jobs:
           MARKER="5-3""-343"
           TRON="TCqf6ZkaQD84vYsC2""cuu1jRwB6JveTaRrF"
           DECODE_EXEC="eval(""atob(...))"          # the construct as docs write it
+          DECODE_EXEC_BUF="eval(""Buffer.from(...))"
+          # Executable openers for the identifier-form fixtures. Same reason: the
+          # scanner's own patterns match these, so they must not appear in this
+          # file as contiguous text.
+          EXEC_ATOB="eval(""atob("
+          EXEC_BUF="eval(""Buffer.from("
 
           # Each case builds a throwaway git repo, runs the scanner, and compares
           # the exit code against what that case must produce.
@@ -133,6 +139,35 @@ jobs:
             mkdir -p src
             printf "eval(\"k\"+Buffer.from(\x27QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=\x27,\"base64\"))\n" > src/main.js'
 
+          # The payload held in a VARIABLE instead of inline. Requiring an inline
+          # literal silently dropped this form — the very one the original
+          # adjacency pattern existed to catch. Caught in review; fixtures added
+          # so it cannot regress again.
+          check "decode-into-eval, payload in a variable" 1 '
+            mkdir -p src
+            printf "var p=\x27QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=\x27;${EXEC_ATOB}p))\n" > src/main.js'
+
+          check "decode-into-eval, Buffer.from identifier" 1 '
+            mkdir -p src
+            printf "var p=\x27QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=\x27;${EXEC_BUF}p,\"base64\"))\n" > src/main.js'
+
+          # Encoding variants: a template literal and the base64url alphabet must
+          # not be a one-character bypass.
+          check "decode-into-eval, backtick template literal" 1 '
+            mkdir -p src
+            printf "eval(\"k\"+atob(\140QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=\140))\n" > src/main.js'
+
+          check "decode-into-eval, base64url charset" 1 '
+            mkdir -p src
+            printf "eval(\"k\"+atob(\x27QUJDREVGR0hJ-ktMTU5PUFFSU1RVVldYWVph_mNkZWY\x27))\n" > src/main.js'
+
+          # The self-tooling exemption is anchored to .github/workflows/. A file
+          # that merely borrows the guard workflow'"'"'s name elsewhere in the tree
+          # must not inherit the exemption.
+          check "guard workflow name outside .github/workflows" 1 '
+            mkdir -p src/vendor
+            printf "          \x27$MARKER\x27\n" > src/vendor/shai-hulud-guard.reusable.yml'
+
           # The self-tooling exemption is per PATH, not per directory. A payload
           # parked next to the vendored guard must still block — otherwise the
           # exemption becomes the hiding place.
@@ -182,6 +217,17 @@ jobs:
           check "legitimate atob() outside eval()" 0 '
             mkdir -p src
             printf "const raw = atob(\x27QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=\x27);\n" > src/util.js'
+
+          # The identifier form must stay bounded to decode-INTO-eval. Decoding a
+          # variable, or a JWT segment, on its own is everyday code.
+          check "atob(<identifier>) not inside eval()" 0 '
+            mkdir -p src
+            printf "const t = atob(token);\nconst b = Buffer.from(s,\"base64\");\n" > src/util.js'
+
+          # Prose naming the Buffer.from variant, same as the atob case above.
+          check "docs quoting the Buffer.from variant" 0 '
+            mkdir -p docs
+            printf "Also seen as $DECODE_EXEC_BUF in the report.\n" > docs/variant.md'
 
           # A product repo that vendors the shai-hulud-guard toolkit. The
           # scanner, its hook and its runbooks are IOC lists by construction.
