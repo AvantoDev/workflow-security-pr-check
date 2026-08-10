@@ -70,7 +70,7 @@ scanner is an independent job; they run in **parallel**.
 | Job | Tool | What it catches | Status |
 | --- | --- | --- | --- |
 | `shai-hulud-guard` | Inline IOC scan ([`shai-hulud-guard.yml`](.github/workflows/shai-hulud-guard.yml)) | Shai-Hulud supply-chain malware indicators (`SEC-2026-051501`) | 🔴 Blocking |
-| `secrets-scan` | Gitleaks (binary, via Docker) | Hardcoded secrets / credentials in the repo & git history | 🔴 Blocking |
+| `secrets-scan` | Gitleaks (binary, via Docker) | Hardcoded secrets / credentials **introduced by the PR** (commit range + merge-result tree, scoped to changed files) | 🔴 Blocking |
 | `sast-scan` | Semgrep (`p/security-audit p/secrets p/owasp-top-ten`) | Code-level vulns: injection, XSS, insecure crypto, OWASP Top 10 | 🔴 Blocking |
 | `sca-scan` | OSV-Scanner (PR-diff mode) | Known-vulnerable dependencies **newly introduced by the PR** | 🔴 Blocking |
 | `actionlint` | actionlint | GitHub Actions workflow syntax/expression errors | 🟡 Warn-only |
@@ -128,7 +128,7 @@ tree carries the payload while **both parents are clean**. Any scan that diffs a
 against its parent, or passes `--no-merges`, steps straight over it. On a `pull_request`,
 GitHub checks out the **merge result**, so scanning the tree sees exactly what would land on
 the base branch. (The Gitleaks job gained a second `--no-git` pass over the merge result for
-the same reason.)
+the same reason — scoped to the files the PR changes, see below.)
 
 **It has no extension allowlist.** The previous guard matched only `*.js`/`*.ts`-family files.
 This malware ships its dropper as a binary-looking asset — JavaScript named `.woff2` — and
@@ -220,6 +220,33 @@ The pipeline applies the **exact same security model**: the gitleaks config is r
 the **base commit only**, and any in-tree `.gitleaks.toml` is deleted before scanning so a
 PR's own allowlist can't auto-apply. To allowlist a finding, merge the `.gitleaks.toml`
 change to the base branch **first** (separate PR), then the suppression takes effect.
+
+### What Gitleaks blocks on (and what it doesn't)
+
+The job runs two passes, and **both are scoped to the PR**:
+
+1. **Commit range** — `base..head`, `--no-merges`. Catches secrets in the PR's commits.
+2. **Merge-result tree** — `--no-git` over the checked-out merge result, for the *evil-merge*
+   case where a merge commit carries content that neither parent has. Findings from this pass
+   are then **filtered to the files the PR touches** (`git diff --name-only --diff-filter=ACMR
+   base head`). Evil-merge coverage is preserved because `git diff` compares **trees**, not
+   commit ancestry, so smuggled content still appears in the changed set.
+
+A pre-existing finding on a file the PR doesn't touch is **reported in the log but does not
+fail the check**. Before this scoping, one false positive on `main` blocked *every* PR in the
+repo, including PRs that had nothing to do with the flagged file. Legacy findings are handled
+by the one-time [`scripts/gitleaks-baseline.sh`](scripts/gitleaks-baseline.sh) sweep, not by
+blocking unrelated PRs.
+
+Note this does **not** change the base-only allowlist rule above, and the allowlist-first
+ordering still stands: you allowlist a file in one PR, then introduce it in the next. That
+ordering is the point — it stops a single PR from adding an infected file and the exclusion
+that hides it. What tree-wide failure added on top was collateral: the allowlist PR itself
+couldn't go green while any unrelated finding sat on `main`. Scoping removes the collateral
+and leaves the guard intact.
+
+The check still **fails closed**: if the scanner itself errors (exit code > 1) or reports
+leaks without writing a readable report, the job fails.
 
 ---
 
@@ -318,8 +345,9 @@ Tracked work and natural next improvements:
   - License-compliance policy on dependencies.
 - [ ] **OSV ignore governance** — consider failing the ignore-PR if entries lack a `reason`
       or `ignoreUntil`, and a periodic job to report expired ignores.
-- [ ] **Gitleaks tuning** — it scans full history and blocks on any pre-existing secret;
-      consider a baseline/allowlist for legacy findings if rollout friction is high.
+- [ ] **Org-level Gitleaks allowlist** — a shared `.gitleaks.toml` in this repo (pinned at
+      `refs/heads/main`) that every repo's scan extends, so a class-wide false positive is
+      fixed once instead of per repo. Repo-level base config would still layer on top.
 
 ---
 
