@@ -87,9 +87,27 @@ CONFIRMED_IOCS=(
   # disposable deployment name that can be republished in seconds.
   'vscode-extension-[0-9]+\.vercel\.app'
   '/settings/(linux|win)\?flag='
-  # Generic across all waves
-  'eval[[:space:]]*\([[:space:]]*atob'
-  'eval[[:space:]]*\([[:space:]]*Buffer\.from'
+  # Generic across all waves: decode-then-execute.
+  #
+  # These require BOTH halves of the construct on one line — an `eval(` and a
+  # base64 *literal* being decoded inside it — because either half alone is
+  # ambiguous:
+  #
+  #   * `eval(` adjacent to `atob` is NOT how the observed payload is written.
+  #     The AvantoDev Form A is
+  #       bootstrap();<~1000 spaces>eval("global.i='5-3-343';"+atob('<base64>'))
+  #     where `eval(` is followed by a string literal, not by `atob`. The
+  #     previous `eval[[:space:]]*\([[:space:]]*atob` therefore did not match the
+  #     real sample; it only matched prose *describing* it as `eval(atob(...))`.
+  #     Every hit it produced across the org was a security document quoting the
+  #     campaign, which is how a gate earns a reputation for crying wolf.
+  #   * `atob('<base64>')` alone is ordinary code. Tests and data-URI handling
+  #     decode base64 constantly. Blocking that would make the gate unusable.
+  #
+  # Requiring the pair keeps the true positive and drops the noise. `.` never
+  # crosses a newline in grep, so the 80-char window stays on one line.
+  "eval[[:space:]]*\(.{0,80}atob[[:space:]]*\([[:space:]]*['\"][A-Za-z0-9+/]{32,}"
+  "eval[[:space:]]*\(.{0,80}Buffer\.from[[:space:]]*\([[:space:]]*['\"][A-Za-z0-9+/]{32,}"
   'Shai-Hulud: Here We Go Again'
 )
 
@@ -127,7 +145,32 @@ expected_magic() {
 #
 # Scoped to specific known paths, NOT a blanket "skip anything under scripts/".
 # A broad exclusion is how a real payload gets parked in an ignored directory.
-SELF_TOOLING_RE='(^|/)(tree-ioc-scan\.sh|scan-machine\.js|gitleaks-baseline\.sh|shai-hulud-guard\.ya?ml|pr-security\.ya?ml|\.security-allowlist)$'
+# For the same reason every entry below is a full path suffix rather than a bare
+# basename wherever the basename alone is generic: `pre-commit` and `README.md`
+# must only be exempt inside the guard's own directory, never repo-wide.
+SELF_TOOLING_PATHS=(
+  'tree-ioc-scan\.sh'
+  'scan-machine\.js'
+  'gitleaks-baseline\.sh'
+  # `.reusable.yml` matters: the callable workflow in consuming repos is named
+  # shai-hulud-guard.reusable.yml, and the previous `shai-hulud-guard\.ya?ml$`
+  # could not match it — the guard's own pattern list blocked every PR in any
+  # repo that vendored it.
+  'shai-hulud-guard(\.reusable)?\.ya?ml'
+  'pr-security\.ya?ml'
+  '\.security-allowlist'
+  # The shai-hulud-guard toolkit vendored into product repos: a scanner, a
+  # pre-commit hook, git-filter-repo purge rules, and the runbooks beside them.
+  # Each is a list of IOC strings by construction, exactly like this script.
+  'security/shai-hulud-guard/scan-shai-hulud\.sh'
+  'security/shai-hulud-guard/pre-commit'
+  'security/shai-hulud-guard/README\.md'
+  'security/shai-hulud-guard/claude-code-find-and-fix\.md'
+  'security/shai-hulud-guard/history-purge/purge-history\.sh'
+  'security/shai-hulud-guard/history-purge/shai-hulud-replace\.txt'
+  'security/shai-hulud-guard/history-purge/README\.md'
+)
+SELF_TOOLING_RE="(^|/)($(IFS='|'; printf '%s' "${SELF_TOOLING_PATHS[*]}"))\$"
 
 is_self_tooling() { printf '%s' "$1" | grep -qE "$SELF_TOOLING_RE"; }
 

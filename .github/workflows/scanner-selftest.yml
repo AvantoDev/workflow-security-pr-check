@@ -110,6 +110,26 @@ jobs:
           check "text file with a .png extension" 1 '
             mkdir -p img && printf "function f(){return process.env.X}\n" > img/logo.png'
 
+          # decode-then-execute, written the way the real sample is written:
+          # eval( is followed by a STRING, and atob() appears later in the same
+          # expression. Deliberately carries no marker string, so this case fails
+          # unless the eval/atob pattern itself matches.
+          check "eval() of a base64 literal (real Form A shape)" 1 '
+            mkdir -p src
+            printf "eval(\"k\"+atob(\x27QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=\x27))\n" > src/main.js'
+
+          # Same, via Buffer.from.
+          check "eval() of Buffer.from base64" 1 '
+            mkdir -p src
+            printf "eval(\"k\"+Buffer.from(\x27QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=\x27,\"base64\"))\n" > src/main.js'
+
+          # The self-tooling exemption is per PATH, not per directory. A payload
+          # parked next to the vendored guard must still block — otherwise the
+          # exemption becomes the hiding place.
+          check "payload beside the vendored guard still blocks" 1 '
+            mkdir -p security/shai-hulud-guard
+            printf "var x=\x275-3-343\x27\n" > security/shai-hulud-guard/evil.js'
+
           echo
           echo "── MUST PASS (false-positive guards) ───────────────────────"
 
@@ -138,6 +158,34 @@ jobs:
           # IOC strings, and this repo is scanned by this very gate.
           check "repo containing the scanner itself" 0 "
             mkdir -p scripts && cp '$S' scripts/"
+
+          # Security documentation naming the construct. This is how incident
+          # reports, runbooks and repo audits refer to the payload, and it is the
+          # single largest source of false positives this gate has produced.
+          check "docs quoting eval(atob(...)) in prose" 0 '
+            mkdir -p docs
+            printf "The payload was an obfuscated eval(atob(...)) blob behind ~1000 spaces.\n" > docs/incident.md
+            printf "Detect with: grep -rn eval(atob dist/\n" >> docs/incident.md'
+
+          # Decoding base64 is ordinary work. Only decode-plus-execute is an IOC;
+          # flagging every atob() call would make the gate unusable.
+          check "legitimate atob() outside eval()" 0 '
+            mkdir -p src
+            printf "const raw = atob(\x27QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=\x27);\n" > src/util.js'
+
+          # A product repo that vendors the shai-hulud-guard toolkit. The
+          # scanner, its hook and its runbooks are IOC lists by construction.
+          check "repo vendoring the shai-hulud-guard toolkit" 0 '
+            mkdir -p security/shai-hulud-guard/history-purge
+            printf "IOCS=(\x275-3-343\x27 \x27TCqf6ZkaQD84vYsC2cuu1jRwB6JveTaRrF\x27)\n" > security/shai-hulud-guard/scan-shai-hulud.sh
+            printf "PATTERNS=(\x275-3-343\x27)\n" > security/shai-hulud-guard/pre-commit
+            printf "Marker: 5-3-343\n" > security/shai-hulud-guard/README.md
+            printf "regex:global\.i=\x275-3-343\x27==>\n" > security/shai-hulud-guard/history-purge/shai-hulud-replace.txt'
+
+          # The callable guard workflow, as it is named in consuming repos.
+          check "vendored shai-hulud-guard.reusable.yml" 0 '
+            mkdir -p .github/workflows
+            printf "          \x275-3-343\x27\n          \x27TCqf6ZkaQD84vYsC2cuu1jRwB6JveTaRrF\x27\n" > .github/workflows/shai-hulud-guard.reusable.yml'
 
           check "empty repository" 0 'printf "x\n" > README.md'
 
