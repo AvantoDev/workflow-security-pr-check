@@ -289,10 +289,30 @@ for f in "${FILES[@]}"; do
   # payload through the previous guard.
   [ "$size" -gt "$MAX_BYTES" ] && continue
   if LC_ALL=C grep -qI . "$f" 2>/dev/null; then      # -I: skip binary
+    # Prose about this threat necessarily contains its indicators: incident records,
+    # runbooks, post-mortems and READMEs quote the strings they tell people to look for.
+    # Blocking those is how a doc-only PR becomes unmergeable and how the gate acquires a
+    # reputation for crying wolf — the same failure the eval(atob) pattern note above
+    # describes, where every hit across the org was a security document.
+    #
+    # Downgraded to a warning rather than skipped. Markdown does not execute, so a hit here
+    # is not a live payload; but a payload STAGED in a doc file before being moved is still
+    # worth seeing, and a silent exclusion is an invisible hole in a security gate. The
+    # finding stays in the log; it just does not block the merge.
+    #
+    # This matches the carve-out the piped-remote-exec check below already makes for docs.
+    case "$f" in
+      *.md|*.markdown|*.mdx|*.txt|*.rst|*/README*|*/CHANGELOG*|*docs/*) doc_like=1 ;;
+      *) doc_like=0 ;;
+    esac
     for p in "${CONFIRMED_IOCS[@]}"; do
       if hit=$(LC_ALL=C grep -nIE -m1 -e "$p" "$f" 2>/dev/null); then
-        note "IOC in $f: ${hit:0:200}
+        if [ "$doc_like" = "1" ]; then
+          echo "::warning file=$f::IOC string in documentation (not blocking): ${hit:0:160}"
+        else
+          note "IOC in $f: ${hit:0:200}
         pattern: $p"
+        fi
       fi
     done
     # ---- 3b. Appended-after-padding check ---------------------------------
