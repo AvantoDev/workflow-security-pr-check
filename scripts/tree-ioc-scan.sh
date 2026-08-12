@@ -124,6 +124,11 @@ CONFIRMED_IOCS=(
   # clean, so this restores the coverage without reintroducing the noise.
   'eval[[:space:]]*\([[:space:]]*(atob|Buffer\.from)[[:space:]]*\([[:space:]]*[A-Za-z_$]'
   'Shai-Hulud: Here We Go Again'
+  # Family shape markers. These match the loader's own output format rather than
+  # any one sample's strings, so a rebuild with renamed variables still matches.
+  # Keep these ahead of sample-specific strings when triaging a hit.
+  '_\$_[0-9a-f]{4}[[:space:]]*=[[:space:]]*\(function'
+  "global[.[]['\"]?[oi]['\"]?]?[[:space:]]*=[[:space:]]*['\"][0-9]+-[0-9A-Za-z-]*['\"]"
 )
 
 # A shell pipeline that executes something fetched from the network.
@@ -284,12 +289,56 @@ for f in "${FILES[@]}"; do
   # payload through the previous guard.
   [ "$size" -gt "$MAX_BYTES" ] && continue
   if LC_ALL=C grep -qI . "$f" 2>/dev/null; then      # -I: skip binary
+    # Prose about this threat necessarily contains its indicators: incident records,
+    # runbooks, post-mortems and READMEs quote the strings they tell people to look for.
+    # Blocking those is how a doc-only PR becomes unmergeable and how the gate acquires a
+    # reputation for crying wolf — the same failure the eval(atob) pattern note above
+    # describes, where every hit across the org was a security document.
+    #
+    # Downgraded to a warning rather than skipped. Markdown does not execute, so a hit here
+    # is not a live payload; but a payload STAGED in a doc file before being moved is still
+    # worth seeing, and a silent exclusion is an invisible hole in a security gate. The
+    # finding stays in the log; it just does not block the merge.
+    #
+    # This matches the carve-out the piped-remote-exec check below already makes for docs.
+    case "$f" in
+      *.md|*.markdown|*.mdx|*.txt|*.rst|*/README*|*/CHANGELOG*|*docs/*) doc_like=1 ;;
+      *) doc_like=0 ;;
+    esac
     for p in "${CONFIRMED_IOCS[@]}"; do
       if hit=$(LC_ALL=C grep -nIE -m1 -e "$p" "$f" 2>/dev/null); then
-        note "IOC in $f: ${hit:0:200}
+        if [ "$doc_like" = "1" ]; then
+          echo "::warning file=$f::IOC string in documentation (not blocking): ${hit:0:160}"
+        else
+          note "IOC in $f: ${hit:0:200}
         pattern: $p"
+        fi
       fi
     done
+    # ---- 3b. Appended-after-padding check ---------------------------------
+    # Code appended to the end of an otherwise normal line, behind a long run of
+    # spaces, so it sits off-screen in a diff. Structural: independent of which
+    # strings the appended code happens to contain.
+    #
+    # Two conditions, both required: the padding run, and a code token on the
+    # same line. Deliberately limited to code extensions — indented markup and
+    # generated documents carry long space runs legitimately, and a check that
+    # fires on those trains people to ignore it.
+    case "$f" in
+      *.js|*.cjs|*.mjs|*.ts|*.tsx|*.jsx|*.json|*.yml|*.yaml)
+        if LC_ALL=C grep -qE ' {200,}[^ ]' "$f" 2>/dev/null \
+           && LC_ALL=C grep -E ' {200,}[^ ]' "$f" 2>/dev/null \
+              | LC_ALL=C grep -qE 'require[[:space:]]*\(|module\.exports|process\.env|child_process|global[.[]|function[[:space:]]*\(|=>[[:space:]]*[{(]|eval[[:space:]]*\('; then
+          # Report the offset only, not the line: the matching line is thousands
+          # of characters wide and would bury the rest of the log.
+          col=$(LC_ALL=C grep -boE ' {200,}' "$f" 2>/dev/null | head -1 | cut -d: -f1)
+          note "APPENDED CODE AFTER PADDING: $f has code following a run of 200+ spaces (byte offset ${col:-?}).
+        Nothing in a normal toolchain emits that. Open the file and scroll right, or run:
+          grep -n ' \\{200,\\}' \"$f\" | cut -c1-120"
+        fi
+        ;;
+    esac
+
     # A piped remote-exec anywhere in a committed file is worth a warning even
     # outside .vscode — CI scripts and devcontainer hooks run automatically too.
     case "$f" in
