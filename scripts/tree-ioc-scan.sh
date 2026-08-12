@@ -172,43 +172,47 @@ expected_magic() {
 # For the same reason every entry below is a full path suffix rather than a bare
 # basename wherever the basename alone is generic: `pre-commit` and `README.md`
 # must only be exempt inside the guard's own directory, never repo-wide.
+# EXACT repo-relative paths, anchored at both ends. Not suffixes.
+#
+# This list used to be matched with a `(^|/)…$` prefix, which is a SUFFIX match: every entry was
+# also exempt at any depth, so `vendor/security/shai-hulud-guard/scan-shai-hulud.sh` — or any path
+# ending in one of these — skipped the scan. The comment here claimed the opposite. An exemption
+# list an attacker can satisfy by choosing a directory name is the same defect as the `*docs/*`
+# folder rule removed in this change, and it is worse here because these entries skip the file
+# entirely rather than downgrading it to a warning. Found by CodeRabbit on #15.
+#
+# A repo that vendors this tooling at a non-canonical path gets a finding, and uses
+# `.security-allowlist` on the base branch. That is the fail-closed direction: an unrecognised copy
+# of a scanner is reviewed once, rather than every lookalike path being trusted forever.
 SELF_TOOLING_PATHS=(
-  'tree-ioc-scan\.sh'
-  'scan-machine\.js'
-  'gitleaks-baseline\.sh'
-  # `.reusable.yml` matters: the callable workflow in consuming repos is named
-  # shai-hulud-guard.reusable.yml, and the previous `shai-hulud-guard\.ya?ml$`
-  # could not match it — the guard's own pattern list blocked every PR in any
-  # repo that vendored it. Anchored to .github/workflows/ so the exemption
-  # cannot be claimed by a file that merely borrows the name: a payload at
-  # src/vendor/shai-hulud-guard.reusable.yml is still scanned.
-  '\.github/workflows/shai-hulud-guard(\.reusable)?\.ya?ml'
-  'pr-security\.ya?ml'
+  # This repo's own tooling.
+  'scripts/tree-ioc-scan\.sh'
+  'scripts/gitleaks-baseline\.sh'
+  '\.github/workflows/pr-security\.ya?ml'
+  '\.github/workflows/shai-hulud-guard\.ya?ml'
   '\.security-allowlist'
-  # The shai-hulud-guard toolkit vendored into product repos: a scanner, a
-  # pre-commit hook, git-filter-repo purge rules, and the runbooks beside them.
-  # Each is a list of IOC strings by construction, exactly like this script.
+  # The reusable guard as vendored into consuming repos.
+  '\.github/workflows/shai-hulud-guard\.reusable\.ya?ml'
+  # The shai-hulud-guard toolkit vendored into product repos: each is a list of IOC strings by
+  # construction, exactly like this script.
   'security/shai-hulud-guard/scan-shai-hulud\.sh'
   'security/shai-hulud-guard/pre-commit'
+  'security/shai-hulud-guard/drift-check\.sh'
   'security/shai-hulud-guard/README\.md'
   'security/shai-hulud-guard/claude-code-find-and-fix\.md'
   'security/shai-hulud-guard/history-purge/purge-history\.sh'
   'security/shai-hulud-guard/history-purge/shai-hulud-replace\.txt'
   'security/shai-hulud-guard/history-purge/README\.md'
-  # Incident-response tooling. These sweep the estate for the campaign, so each is a list of IOC
-  # strings by construction — the same class as the scanners above. They were exempt only as a side
-  # effect of the `*docs/*` folder rule removed in this change; registering them by path is what
-  # that rule was accidentally doing, minus the hole. Anchored to their real directory so a payload
-  # at src/sec-2026-0807-inventory.sh is still scanned.
+  # Machine-scan tooling and the SEC-2026-0807 response scripts. Same class: they sweep for the
+  # campaign, so they quote its markers by design.
+  'docs/incidents/machine-scan/scan-machine\.js'
   'docs/incidents/scripts/sec-2026-0807-inventory\.sh'
   'docs/incidents/scripts/sec-2026-0807-bare-inventory\.sh'
   'docs/incidents/scripts/sec-2026-0807-credential-scan\.sh'
   'docs/incidents/scripts/sec-2026-0807-restore-branches\.sh'
-  # Derives its marker list from the scanner at runtime and holds no literals, but is listed for
-  # the same reason as its siblings: it is the guard's own drift test.
-  'security/shai-hulud-guard/drift-check\.sh'
 )
-SELF_TOOLING_RE="(^|/)($(IFS='|'; printf '%s' "${SELF_TOOLING_PATHS[*]}"))\$"
+# Anchored at BOTH ends: the path must be the whole repo-relative path, not a tail of it.
+SELF_TOOLING_RE="^($(IFS='|'; printf '%s' "${SELF_TOOLING_PATHS[*]}"))\$"
 
 is_self_tooling() { printf '%s' "$1" | grep -qE "$SELF_TOOLING_RE"; }
 
