@@ -172,31 +172,47 @@ expected_magic() {
 # For the same reason every entry below is a full path suffix rather than a bare
 # basename wherever the basename alone is generic: `pre-commit` and `README.md`
 # must only be exempt inside the guard's own directory, never repo-wide.
+# EXACT repo-relative paths, anchored at both ends. Not suffixes.
+#
+# This list used to be matched with a `(^|/)…$` prefix, which is a SUFFIX match: every entry was
+# also exempt at any depth, so `vendor/security/shai-hulud-guard/scan-shai-hulud.sh` — or any path
+# ending in one of these — skipped the scan. The comment here claimed the opposite. An exemption
+# list an attacker can satisfy by choosing a directory name is the same defect as the `*docs/*`
+# folder rule removed in this change, and it is worse here because these entries skip the file
+# entirely rather than downgrading it to a warning. Found by CodeRabbit on #15.
+#
+# A repo that vendors this tooling at a non-canonical path gets a finding, and uses
+# `.security-allowlist` on the base branch. That is the fail-closed direction: an unrecognised copy
+# of a scanner is reviewed once, rather than every lookalike path being trusted forever.
 SELF_TOOLING_PATHS=(
-  'tree-ioc-scan\.sh'
-  'scan-machine\.js'
-  'gitleaks-baseline\.sh'
-  # `.reusable.yml` matters: the callable workflow in consuming repos is named
-  # shai-hulud-guard.reusable.yml, and the previous `shai-hulud-guard\.ya?ml$`
-  # could not match it — the guard's own pattern list blocked every PR in any
-  # repo that vendored it. Anchored to .github/workflows/ so the exemption
-  # cannot be claimed by a file that merely borrows the name: a payload at
-  # src/vendor/shai-hulud-guard.reusable.yml is still scanned.
-  '\.github/workflows/shai-hulud-guard(\.reusable)?\.ya?ml'
-  'pr-security\.ya?ml'
+  # This repo's own tooling.
+  'scripts/tree-ioc-scan\.sh'
+  'scripts/gitleaks-baseline\.sh'
+  '\.github/workflows/pr-security\.ya?ml'
+  '\.github/workflows/shai-hulud-guard\.ya?ml'
   '\.security-allowlist'
-  # The shai-hulud-guard toolkit vendored into product repos: a scanner, a
-  # pre-commit hook, git-filter-repo purge rules, and the runbooks beside them.
-  # Each is a list of IOC strings by construction, exactly like this script.
+  # The reusable guard as vendored into consuming repos.
+  '\.github/workflows/shai-hulud-guard\.reusable\.ya?ml'
+  # The shai-hulud-guard toolkit vendored into product repos: each is a list of IOC strings by
+  # construction, exactly like this script.
   'security/shai-hulud-guard/scan-shai-hulud\.sh'
   'security/shai-hulud-guard/pre-commit'
+  'security/shai-hulud-guard/drift-check\.sh'
   'security/shai-hulud-guard/README\.md'
   'security/shai-hulud-guard/claude-code-find-and-fix\.md'
   'security/shai-hulud-guard/history-purge/purge-history\.sh'
   'security/shai-hulud-guard/history-purge/shai-hulud-replace\.txt'
   'security/shai-hulud-guard/history-purge/README\.md'
+  # Machine-scan tooling and the SEC-2026-0807 response scripts. Same class: they sweep for the
+  # campaign, so they quote its markers by design.
+  'docs/incidents/machine-scan/scan-machine\.js'
+  'docs/incidents/scripts/sec-2026-0807-inventory\.sh'
+  'docs/incidents/scripts/sec-2026-0807-bare-inventory\.sh'
+  'docs/incidents/scripts/sec-2026-0807-credential-scan\.sh'
+  'docs/incidents/scripts/sec-2026-0807-restore-branches\.sh'
 )
-SELF_TOOLING_RE="(^|/)($(IFS='|'; printf '%s' "${SELF_TOOLING_PATHS[*]}"))\$"
+# Anchored at BOTH ends: the path must be the whole repo-relative path, not a tail of it.
+SELF_TOOLING_RE="^($(IFS='|'; printf '%s' "${SELF_TOOLING_PATHS[*]}"))\$"
 
 is_self_tooling() { printf '%s' "$1" | grep -qE "$SELF_TOOLING_RE"; }
 
@@ -306,7 +322,23 @@ for f in "${FILES[@]}"; do
     #
     # This matches the carve-out the piped-remote-exec check below already makes for docs.
     case "$f" in
-      *.md|*.markdown|*.mdx|*.txt|*.rst|*/README*|*/CHANGELOG*|*docs/*) doc_like=1 ;;
+      # BY FILE TYPE ONLY — never by folder, and never by filename.
+      #
+      # `*docs/*`, `*/README*` and `*/CHANGELOG*` were removed on 2026-08-12. A folder exemption is
+      # a named place to park a payload: `docs/anything.js` would have been downgraded to a warning
+      # purely because of where it sat, and an attacker who reads this file learns the directory to
+      # use. A filename exemption has the same defect — `src/README.js` is not documentation.
+      #
+      # What remains is exempt because of what the format IS. Nothing in a toolchain reads a `.md`
+      # or a `.txt` and executes it, so a marker in one is prose, not a payload. That reasoning does
+      # NOT extend to `.json`, which is why it is absent: `package.json` runs `postinstall`,
+      # `.vscode/tasks.json` runs on folder open — the delivery mechanism in this very family —
+      # `devcontainer.json` runs `postCreateCommand`, and `.eslintrc.json`/`tsconfig.json` load
+      # modules. JSON is read by a toolchain; Markdown is read by a human.
+      #
+      # Documentation that must quote a payload verbatim (incident records, decoded samples) belongs
+      # in a `.md` or `.txt` file for exactly this reason.
+      *.md|*.markdown|*.mdx|*.txt|*.rst) doc_like=1 ;;
       *) doc_like=0 ;;
     esac
     for p in "${CONFIRMED_IOCS[@]}"; do
