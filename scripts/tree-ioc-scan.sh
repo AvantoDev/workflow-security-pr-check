@@ -195,6 +195,18 @@ SELF_TOOLING_PATHS=(
   'security/shai-hulud-guard/history-purge/purge-history\.sh'
   'security/shai-hulud-guard/history-purge/shai-hulud-replace\.txt'
   'security/shai-hulud-guard/history-purge/README\.md'
+  # Incident-response tooling. These sweep the estate for the campaign, so each is a list of IOC
+  # strings by construction — the same class as the scanners above. They were exempt only as a side
+  # effect of the `*docs/*` folder rule removed in this change; registering them by path is what
+  # that rule was accidentally doing, minus the hole. Anchored to their real directory so a payload
+  # at src/sec-2026-0807-inventory.sh is still scanned.
+  'docs/incidents/scripts/sec-2026-0807-inventory\.sh'
+  'docs/incidents/scripts/sec-2026-0807-bare-inventory\.sh'
+  'docs/incidents/scripts/sec-2026-0807-credential-scan\.sh'
+  'docs/incidents/scripts/sec-2026-0807-restore-branches\.sh'
+  # Derives its marker list from the scanner at runtime and holds no literals, but is listed for
+  # the same reason as its siblings: it is the guard's own drift test.
+  'security/shai-hulud-guard/drift-check\.sh'
 )
 SELF_TOOLING_RE="(^|/)($(IFS='|'; printf '%s' "${SELF_TOOLING_PATHS[*]}"))\$"
 
@@ -306,7 +318,23 @@ for f in "${FILES[@]}"; do
     #
     # This matches the carve-out the piped-remote-exec check below already makes for docs.
     case "$f" in
-      *.md|*.markdown|*.mdx|*.txt|*.rst|*/README*|*/CHANGELOG*|*docs/*) doc_like=1 ;;
+      # BY FILE TYPE ONLY — never by folder, and never by filename.
+      #
+      # `*docs/*`, `*/README*` and `*/CHANGELOG*` were removed on 2026-08-12. A folder exemption is
+      # a named place to park a payload: `docs/anything.js` would have been downgraded to a warning
+      # purely because of where it sat, and an attacker who reads this file learns the directory to
+      # use. A filename exemption has the same defect — `src/README.js` is not documentation.
+      #
+      # What remains is exempt because of what the format IS. Nothing in a toolchain reads a `.md`
+      # or a `.txt` and executes it, so a marker in one is prose, not a payload. That reasoning does
+      # NOT extend to `.json`, which is why it is absent: `package.json` runs `postinstall`,
+      # `.vscode/tasks.json` runs on folder open — the delivery mechanism in this very family —
+      # `devcontainer.json` runs `postCreateCommand`, and `.eslintrc.json`/`tsconfig.json` load
+      # modules. JSON is read by a toolchain; Markdown is read by a human.
+      #
+      # Documentation that must quote a payload verbatim (incident records, decoded samples) belongs
+      # in a `.md` or `.txt` file for exactly this reason.
+      *.md|*.markdown|*.mdx|*.txt|*.rst) doc_like=1 ;;
       *) doc_like=0 ;;
     esac
     for p in "${CONFIRMED_IOCS[@]}"; do
