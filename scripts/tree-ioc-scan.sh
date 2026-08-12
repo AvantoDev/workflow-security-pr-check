@@ -134,6 +134,10 @@ CONFIRMED_IOCS=(
 # A shell pipeline that executes something fetched from the network.
 PIPED_EXEC='(curl|wget|iwr|Invoke-WebRequest)[^|]*\|[[:space:]]*(ba|z)?sh|(curl|wget|iwr)[^|]*\|[[:space:]]*(cmd|powershell|pwsh)'
 
+# Code appended after a long run of spaces, so it sits off-screen in a diff. The token must follow
+# the padding — `.` never crosses a newline in grep, so the match stays on one line.
+PADDED_CODE_RE=' {200,}.*(require[[:space:]]*\(|module\.exports|process\.env|child_process|global[.[]|function[[:space:]]*\(|=>[[:space:]]*[{(]|eval[[:space:]]*\()'
+
 # Executing a file that carries a binary asset extension. Nothing legitimate
 # runs `node something.woff2`. This is what promotes an auto-run task from a
 # bland "runs something on folder open" to a confirmed finding.
@@ -326,15 +330,22 @@ for f in "${FILES[@]}"; do
     # fires on those trains people to ignore it.
     case "$f" in
       *.js|*.cjs|*.mjs|*.ts|*.tsx|*.jsx|*.json|*.yml|*.yaml)
-        if LC_ALL=C grep -qE ' {200,}[^ ]' "$f" 2>/dev/null \
-           && LC_ALL=C grep -E ' {200,}[^ ]' "$f" 2>/dev/null \
-              | LC_ALL=C grep -qE 'require[[:space:]]*\(|module\.exports|process\.env|child_process|global[.[]|function[[:space:]]*\(|=>[[:space:]]*[{(]|eval[[:space:]]*\('; then
-          # Report the offset only, not the line: the matching line is thousands
-          # of characters wide and would bury the rest of the log.
-          col=$(LC_ALL=C grep -boE ' {200,}' "$f" 2>/dev/null | head -1 | cut -d: -f1)
+        # ONE suffix-aware regex, used for both the test and the offset.
+        #
+        # It must require the token AFTER the padding, not merely on the same line. A two-stage
+        # "line has padding" AND "line has a token" test flags
+        #   const p = require("path");<300 spaces>trailing note
+        # which is an ordinary file with an oddly padded comment — the token precedes the run.
+        # Using one regex for the offset too keeps the reported position on the run that actually
+        # has code after it; taking the first ' {200,}' in the file can point at an unrelated
+        # earlier run and send the reader to the wrong place.
+        if LC_ALL=C grep -qE "$PADDED_CODE_RE" "$f" 2>/dev/null; then
+          # Offset only, not the line: the match is thousands of characters wide and would bury
+          # the rest of the log.
+          col=$(LC_ALL=C grep -boE "$PADDED_CODE_RE" "$f" 2>/dev/null | head -1 | cut -d: -f1)
           note "APPENDED CODE AFTER PADDING: $f has code following a run of 200+ spaces (byte offset ${col:-?}).
         Nothing in a normal toolchain emits that. Open the file and scroll right, or run:
-          grep -n ' \\{200,\\}' \"$f\" | cut -c1-120"
+          grep -n ' \\{200,\\}' -- \"$f\" | sed 's/ \\{200,\\}/ <200+ spaces> /'"
         fi
         ;;
     esac
