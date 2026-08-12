@@ -124,6 +124,11 @@ CONFIRMED_IOCS=(
   # clean, so this restores the coverage without reintroducing the noise.
   'eval[[:space:]]*\([[:space:]]*(atob|Buffer\.from)[[:space:]]*\([[:space:]]*[A-Za-z_$]'
   'Shai-Hulud: Here We Go Again'
+  # Family shape markers. These match the loader's own output format rather than
+  # any one sample's strings, so a rebuild with renamed variables still matches.
+  # Keep these ahead of sample-specific strings when triaging a hit.
+  '_\$_[0-9a-f]{4}[[:space:]]*=[[:space:]]*\(function'
+  "global[.[]['\"]?[oi]['\"]?]?[[:space:]]*=[[:space:]]*['\"][0-9]+-[0-9A-Za-z-]*['\"]"
 )
 
 # A shell pipeline that executes something fetched from the network.
@@ -290,6 +295,30 @@ for f in "${FILES[@]}"; do
         pattern: $p"
       fi
     done
+    # ---- 3b. Appended-after-padding check ---------------------------------
+    # Code appended to the end of an otherwise normal line, behind a long run of
+    # spaces, so it sits off-screen in a diff. Structural: independent of which
+    # strings the appended code happens to contain.
+    #
+    # Two conditions, both required: the padding run, and a code token on the
+    # same line. Deliberately limited to code extensions — indented markup and
+    # generated documents carry long space runs legitimately, and a check that
+    # fires on those trains people to ignore it.
+    case "$f" in
+      *.js|*.cjs|*.mjs|*.ts|*.tsx|*.jsx|*.json|*.yml|*.yaml)
+        if LC_ALL=C grep -qE ' {200,}[^ ]' "$f" 2>/dev/null \
+           && LC_ALL=C grep -E ' {200,}[^ ]' "$f" 2>/dev/null \
+              | LC_ALL=C grep -qE 'require[[:space:]]*\(|module\.exports|process\.env|child_process|global[.[]|function[[:space:]]*\(|=>[[:space:]]*[{(]|eval[[:space:]]*\('; then
+          # Report the offset only, not the line: the matching line is thousands
+          # of characters wide and would bury the rest of the log.
+          col=$(LC_ALL=C grep -boE ' {200,}' "$f" 2>/dev/null | head -1 | cut -d: -f1)
+          note "APPENDED CODE AFTER PADDING: $f has code following a run of 200+ spaces (byte offset ${col:-?}).
+        Nothing in a normal toolchain emits that. Open the file and scroll right, or run:
+          grep -n ' \\{200,\\}' \"$f\" | cut -c1-120"
+        fi
+        ;;
+    esac
+
     # A piped remote-exec anywhere in a committed file is worth a warning even
     # outside .vscode — CI scripts and devcontainer hooks run automatically too.
     case "$f" in
