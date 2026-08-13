@@ -198,6 +198,14 @@ SELF_TOOLING_PATHS=(
   'security/shai-hulud-guard/scan-shai-hulud\.sh'
   'security/shai-hulud-guard/pre-commit'
   'security/shai-hulud-guard/drift-check\.sh'
+  # The git hooks. _shared.sh IS the marker definition the hooks share, so it cannot avoid
+  # containing the strings — it is the same class as scan-shai-hulud.sh, and without these entries
+  # every repo that vendors the hooks blocks its own PRs on the security control it just installed.
+  'security/shai-hulud-guard/hooks/_shared\.sh'
+  'security/shai-hulud-guard/hooks/pre-commit'
+  'security/shai-hulud-guard/hooks/post-checkout'
+  'security/shai-hulud-guard/hooks/post-merge'
+  'security/shai-hulud-guard/hooks/install\.sh'
   'security/shai-hulud-guard/README\.md'
   'security/shai-hulud-guard/claude-code-find-and-fix\.md'
   'security/shai-hulud-guard/history-purge/purge-history\.sh'
