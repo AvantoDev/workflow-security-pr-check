@@ -137,16 +137,18 @@ PIPED_EXEC='(curl|wget|iwr|Invoke-WebRequest)[^|]*\|[[:space:]]*(ba|z)?sh|(curl|
 # Code appended after a long run of spaces, so it sits off-screen in a diff.
 #
 # THREE conditions, all load-bearing:
-#   1. a non-space BEFORE the run  — without it the rule matches leading INDENTATION, not appended
-#      padding. Deeply nested XAML clears 200 spaces unaided; this produced ~9,500 phantom hits on a
-#      single UiPath repo and falsely flagged ~35 of them. Payload is code->pad->code; indentation is
-#      pad->code. Found by Christian Mejia, 2026-08-13.
+#   1. a NON-WHITESPACE char BEFORE the run — without it the rule matches leading INDENTATION, not
+#      appended padding. Deeply nested XAML clears 200 spaces unaided; this produced ~9,500 phantom
+#      hits on a single UiPath repo and falsely flagged ~35 of them. Payload is code->pad->code;
+#      indentation is pad->code. Found by Christian Mejia, 2026-08-13.
+#      The class must be NON-WHITESPACE, not merely non-space: `[^ ]` accepts a TAB, so ordinary
+#      mixed indentation — `<tab><250 spaces>require(` — still matched. Found by CodeRabbit on #17.
 #   2. the token AFTER the run     — otherwise `const p = require("path");<300 spaces>trailing note`
 #      is flagged, an ordinary file whose token merely precedes the run. (CodeRabbit, #14.)
 #   3. 200 spaces, not fewer       — measured: 0 false positives over 1,742,964 real files, while
 #      5,471 files carry runs of 80-199. Do not lower it.
 # `.` never crosses a newline in grep, so the match stays on one line.
-PADDED_CODE_RE='[^ ] {200,}.*(require[[:space:]]*\(|module\.exports|process\.env|child_process|global[.[]|function[[:space:]]*\(|=>[[:space:]]*[{(]|eval[[:space:]]*\()'
+PADDED_CODE_RE='[^[:space:]] {200,}.*(require[[:space:]]*\(|module\.exports|process\.env|child_process|global[.[]|function[[:space:]]*\(|=>[[:space:]]*[{(]|eval[[:space:]]*\()'
 
 # Executing a file that carries a binary asset extension. Nothing legitimate
 # runs `node something.woff2`. This is what promotes an auto-run task from a
@@ -249,7 +251,7 @@ SELF_TOOLING_PATHS=(
 # scan-machine.js and the vendored toolkit are versioned per repo, so pinning them would break every
 # consumer sitting on a different revision.
 SELF_TOOLING_HASHES="
-2bfea91b430985a7dacc38d0f0d6c2262d086dc7d271caa66124104bc35e8d95  security/shai-hulud-guard/hooks/_shared.sh
+15b5a6d1053b41ec71943f1da326a49bbf786309297a789076885078802b22c3  security/shai-hulud-guard/hooks/_shared.sh
 e363e5c1da49d2e0fa55049d825be57474be3d1d5c25a13b3c5646be7814dd05  security/shai-hulud-guard/hooks/pre-commit
 b5712cc58850efd68eb58356a29fa8212afb271b6c9f1e3b50cb840be91a005f  security/shai-hulud-guard/hooks/post-checkout
 a398d31098f07388da9ccfad6a9ff9d19398877005b535c3ad90ebb4cd3095a9  security/shai-hulud-guard/hooks/post-merge
