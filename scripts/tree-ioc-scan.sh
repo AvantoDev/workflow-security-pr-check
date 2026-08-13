@@ -244,9 +244,25 @@ SELF_TOOLING_PATHS=(
 # unpinned self-signed manifest grants nothing.
 #
 # THE COST IS REAL: editing a hook in ai-claude-agents without updating the hash here makes every
-# repo carrying the hooks fail this check. That is why the mismatch message names the file, both
-# hashes and the exact fix — a confusing block gets the control deleted, an actionable one gets it
-# fixed. Regenerate with:  sha256sum security/shai-hulud-guard/hooks/*
+# repo carrying the hooks fail this check. That is why the mismatch message names the file, every
+# accepted hash and the exact fix — a confusing block gets the control deleted, an actionable one
+# gets it fixed. Regenerate with:  sha256sum security/shai-hulud-guard/hooks/*
+#
+# TRANSITIONS: a path may list MORE THAN ONE hash, and any listed hash is accepted. This exists
+# because the hook and its pin live in DIFFERENT REPOS and therefore cannot land in the same
+# instant. With one hash per path, every hook edit is a flag day: the moment the edit merges to
+# ai-claude-agents, either main or the in-flight PR is guaranteed to fail, whichever way the pin
+# points. That is not hypothetical — ai-claude-agents#85 changed _shared.sh, the pin was moved
+# forward to the version in the then-unmerged #86, and every PR opened in between failed closed on
+# a file none of them touched.
+#
+# So the procedure for changing a hook is:
+#   1. ADD the new hash here, keeping the outgoing one. Both revisions now pass.
+#   2. Land the hook change in ai-claude-agents, at whatever pace review takes.
+#   3. DELETE the outgoing hash once nothing references it. Leaving it is not a hole — it is a
+#      revision that was reviewed — but the list should describe the present, so prune it.
+# Each entry is still an explicit, reviewed decision to trust one exact byte sequence; listing two
+# accepts two known revisions, it does not relax the check.
 #
 # That glob covers EVERY file in the directory, so SELF_TOOLING_PATHS must list every file in the
 # directory too. A file under the pinned prefix but MISSING from SELF_TOOLING_PATHS never reaches the
@@ -259,7 +275,8 @@ SELF_TOOLING_PATHS=(
 # scan-machine.js and the vendored toolkit are versioned per repo, so pinning them would break every
 # consumer sitting on a different revision.
 SELF_TOOLING_HASHES="
-9e3c95c4a2f6a9a45a2ed2f70c3dee479b2c231e9348e1425d96742017d980af  security/shai-hulud-guard/hooks/_shared.sh
+15b5a6d1053b41ec71943f1da326a49bbf786309297a789076885078802b22c3  security/shai-hulud-guard/hooks/_shared.sh  # ai-claude-agents main today (after #85)
+9e3c95c4a2f6a9a45a2ed2f70c3dee479b2c231e9348e1425d96742017d980af  security/shai-hulud-guard/hooks/_shared.sh  # incoming, ai-claude-agents#86 — drop the line above once it lands
 e363e5c1da49d2e0fa55049d825be57474be3d1d5c25a13b3c5646be7814dd05  security/shai-hulud-guard/hooks/pre-commit
 b5712cc58850efd68eb58356a29fa8212afb271b6c9f1e3b50cb840be91a005f  security/shai-hulud-guard/hooks/post-checkout
 a398d31098f07388da9ccfad6a9ff9d19398877005b535c3ad90ebb4cd3095a9  security/shai-hulud-guard/hooks/post-merge
@@ -273,27 +290,34 @@ SELF_TOOLING_PINNED='^security/shai-hulud-guard/hooks/'
 SELF_TOOLING_RE="^($(IFS='|'; printf '%s' "${SELF_TOOLING_PATHS[*]}"))\$"
 
 is_self_tooling() {
-  local p="$1" want got
+  local p="$1" wants got
   printf '%s' "$p" | grep -qE "$SELF_TOOLING_RE" || return 1
 
   # Not hash-pinned: path match is the whole test (legacy entries, versioned per repo).
   printf '%s' "$p" | grep -qE "$SELF_TOOLING_PINNED" || return 0
 
-  # Hash-pinned: content decides.
-  want="$(printf '%s\n' "$SELF_TOOLING_HASHES" | awk -v f="$p" '$2==f{print $1; exit}')"
-  if [ -z "$want" ]; then
+  # Hash-pinned: content decides. A path may list MORE THAN ONE hash and any of them is
+  # accepted — see "Transitions" above. Trust is still granted only to contents somebody
+  # wrote down here, so N accepted hashes is N reviewed revisions, not a wildcard.
+  wants="$(printf '%s\n' "$SELF_TOOLING_HASHES" | awk -v f="$p" '$2==f{print $1}')"
+  if [ -z "$wants" ]; then
     echo "::error file=$p::listed as hash-pinned self-tooling but no hash is recorded — scanning it. Add its sha256 to SELF_TOOLING_HASHES in workflow-security-pr-check."
     return 1
   fi
   got="$(sha256sum "$p" 2>/dev/null | cut -d' ' -f1)"
-  if [ "$got" = "$want" ]; then
+  # -x so a truncated hash cannot match by prefix, -F so it is compared literally.
+  if [ -n "$got" ] && printf '%s\n' "$wants" | grep -qxF "$got"; then
     return 0
   fi
   # Fail closed: an unrecognised version of a security hook is reviewed, not trusted.
-  echo "::error file=$p::hook file does not match its pinned hash, so it is being SCANNED, not trusted."
-  echo "::error file=$p::  expected $want"
+  echo "::error file=$p::hook file does not match any pinned hash, so it is being SCANNED, not trusted."
+  while IFS= read -r want; do
+    [ -n "$want" ] && echo "::error file=$p::  accepted $want"
+  done <<EOF
+$wants
+EOF
   echo "::error file=$p::  actual   ${got:-<unreadable>}"
-  echo "::error file=$p::If you intentionally changed this hook, update SELF_TOOLING_HASHES in AvantoDev/workflow-security-pr-check (sha256sum security/shai-hulud-guard/hooks/*) in the same change. If you did not change it, STOP and report it."
+  echo "::error file=$p::If you intentionally changed this hook, ADD its sha256 to SELF_TOOLING_HASHES in AvantoDev/workflow-security-pr-check (sha256sum security/shai-hulud-guard/hooks/*) — keep the outgoing hash listed until the change has landed everywhere, then drop it. If you did not change it, STOP and report it."
   return 1
 }
 
