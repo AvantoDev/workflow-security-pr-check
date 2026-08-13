@@ -218,6 +218,7 @@ SELF_TOOLING_PATHS=(
   'security/shai-hulud-guard/hooks/post-checkout'
   'security/shai-hulud-guard/hooks/post-merge'
   'security/shai-hulud-guard/hooks/install\.sh'
+  'security/shai-hulud-guard/hooks/README\.md'
   'security/shai-hulud-guard/README\.md'
   'security/shai-hulud-guard/claude-code-find-and-fix\.md'
   'security/shai-hulud-guard/history-purge/purge-history\.sh'
@@ -247,15 +248,23 @@ SELF_TOOLING_PATHS=(
 # hashes and the exact fix — a confusing block gets the control deleted, an actionable one gets it
 # fixed. Regenerate with:  sha256sum security/shai-hulud-guard/hooks/*
 #
+# That glob covers EVERY file in the directory, so SELF_TOOLING_PATHS must list every file in the
+# directory too. A file under the pinned prefix but MISSING from SELF_TOOLING_PATHS never reaches the
+# "pinned but no hash recorded" error — is_self_tooling() returns 1 at the path test and the file is
+# quietly scanned as ordinary content. That is how hooks/README.md sat unlisted: it was added after
+# the pin, this glob picked it up, the path list did not. Harmless while it contains no markers, and a
+# silent trap the day it documents one verbatim.
+#
 # Entries in SELF_TOOLING_PATHS that are NOT under the pinned prefix stay path-only by design:
 # scan-machine.js and the vendored toolkit are versioned per repo, so pinning them would break every
 # consumer sitting on a different revision.
 SELF_TOOLING_HASHES="
-15b5a6d1053b41ec71943f1da326a49bbf786309297a789076885078802b22c3  security/shai-hulud-guard/hooks/_shared.sh
+9e3c95c4a2f6a9a45a2ed2f70c3dee479b2c231e9348e1425d96742017d980af  security/shai-hulud-guard/hooks/_shared.sh
 e363e5c1da49d2e0fa55049d825be57474be3d1d5c25a13b3c5646be7814dd05  security/shai-hulud-guard/hooks/pre-commit
 b5712cc58850efd68eb58356a29fa8212afb271b6c9f1e3b50cb840be91a005f  security/shai-hulud-guard/hooks/post-checkout
 a398d31098f07388da9ccfad6a9ff9d19398877005b535c3ad90ebb4cd3095a9  security/shai-hulud-guard/hooks/post-merge
 5f77bb338d4e56da394d8da6701745a2d8c6b3a8e0336c238b13bc17f2ada365  security/shai-hulud-guard/hooks/install.sh
+7d5f83994d86bae1ae3c7b7cb4149990aba5c4462481cdf66c22641251358319  security/shai-hulud-guard/hooks/README.md
 "
 # Kept separate from SELF_TOOLING_PATHS so adding a path cannot silently make it hash-pinned, and a
 # typo in a hash cannot quietly disable the pin.
