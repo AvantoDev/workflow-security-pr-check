@@ -220,9 +220,61 @@ SELF_TOOLING_PATHS=(
   'docs/incidents/scripts/sec-2026-0807-restore-branches\.sh'
 )
 # Anchored at BOTH ends: the path must be the whole repo-relative path, not a tail of it.
+# ── Hash-pinned exemptions ──────────────────────────────────────────────────
+# A path-only exemption is a trust assumption: "a file at this path is ours". That is a hole — a
+# payload written to exactly security/shai-hulud-guard/hooks/_shared.sh would be skipped entirely,
+# no IOC scan and no magic-byte check. Anchoring the path (#15) stops vendor/…/_shared.sh from
+# claiming it, but not the canonical path itself.
+#
+# So for the hooks the exemption is granted by CONTENT, not by name: exempt only when the SHA-256
+# matches. Same trust-anchor pattern as the evidence-manifest pin in scan-machine.js, where an
+# unpinned self-signed manifest grants nothing.
+#
+# THE COST IS REAL: editing a hook in ai-claude-agents without updating the hash here makes every
+# repo carrying the hooks fail this check. That is why the mismatch message names the file, both
+# hashes and the exact fix — a confusing block gets the control deleted, an actionable one gets it
+# fixed. Regenerate with:  sha256sum security/shai-hulud-guard/hooks/*
+#
+# Entries in SELF_TOOLING_PATHS that are NOT under the pinned prefix stay path-only by design:
+# scan-machine.js and the vendored toolkit are versioned per repo, so pinning them would break every
+# consumer sitting on a different revision.
+SELF_TOOLING_HASHES="
+f3380e0ef21a1bf97aec07f5babf42f33c841469824655f14fe7b093f73ef64a  security/shai-hulud-guard/hooks/_shared.sh
+e363e5c1da49d2e0fa55049d825be57474be3d1d5c25a13b3c5646be7814dd05  security/shai-hulud-guard/hooks/pre-commit
+b5712cc58850efd68eb58356a29fa8212afb271b6c9f1e3b50cb840be91a005f  security/shai-hulud-guard/hooks/post-checkout
+a398d31098f07388da9ccfad6a9ff9d19398877005b535c3ad90ebb4cd3095a9  security/shai-hulud-guard/hooks/post-merge
+5f77bb338d4e56da394d8da6701745a2d8c6b3a8e0336c238b13bc17f2ada365  security/shai-hulud-guard/hooks/install.sh
+"
+# Kept separate from SELF_TOOLING_PATHS so adding a path cannot silently make it hash-pinned, and a
+# typo in a hash cannot quietly disable the pin.
+SELF_TOOLING_PINNED='^security/shai-hulud-guard/hooks/'
+
 SELF_TOOLING_RE="^($(IFS='|'; printf '%s' "${SELF_TOOLING_PATHS[*]}"))\$"
 
-is_self_tooling() { printf '%s' "$1" | grep -qE "$SELF_TOOLING_RE"; }
+is_self_tooling() {
+  local p="$1" want got
+  printf '%s' "$p" | grep -qE "$SELF_TOOLING_RE" || return 1
+
+  # Not hash-pinned: path match is the whole test (legacy entries, versioned per repo).
+  printf '%s' "$p" | grep -qE "$SELF_TOOLING_PINNED" || return 0
+
+  # Hash-pinned: content decides.
+  want="$(printf '%s\n' "$SELF_TOOLING_HASHES" | awk -v f="$p" '$2==f{print $1; exit}')"
+  if [ -z "$want" ]; then
+    echo "::error file=$p::listed as hash-pinned self-tooling but no hash is recorded — scanning it. Add its sha256 to SELF_TOOLING_HASHES in workflow-security-pr-check."
+    return 1
+  fi
+  got="$(sha256sum "$p" 2>/dev/null | cut -d' ' -f1)"
+  if [ "$got" = "$want" ]; then
+    return 0
+  fi
+  # Fail closed: an unrecognised version of a security hook is reviewed, not trusted.
+  echo "::error file=$p::hook file does not match its pinned hash, so it is being SCANNED, not trusted."
+  echo "::error file=$p::  expected $want"
+  echo "::error file=$p::  actual   ${got:-<unreadable>}"
+  echo "::error file=$p::If you intentionally changed this hook, update SELF_TOOLING_HASHES in AvantoDev/workflow-security-pr-check (sha256sum security/shai-hulud-guard/hooks/*) in the same change. If you did not change it, STOP and report it."
+  return 1
+}
 
 # ── Allowlist (one glob or literal path per line; '#' comments) ──────────────
 allowed() {
