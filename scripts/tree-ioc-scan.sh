@@ -275,7 +275,7 @@ SELF_TOOLING_PATHS=(
 # scan-machine.js and the vendored toolkit are versioned per repo, so pinning them would break every
 # consumer sitting on a different revision.
 SELF_TOOLING_HASHES="
-9e3c95c4a2f6a9a45a2ed2f70c3dee479b2c231e9348e1425d96742017d980af  security/shai-hulud-guard/hooks/_shared.sh
+0a8e462801a440b17a5d6947a3caa8a278cfdde0bc9dc2e545fe79652039bfb6  security/shai-hulud-guard/hooks/_shared.sh
 e363e5c1da49d2e0fa55049d825be57474be3d1d5c25a13b3c5646be7814dd05  security/shai-hulud-guard/hooks/pre-commit
 b5712cc58850efd68eb58356a29fa8212afb271b6c9f1e3b50cb840be91a005f  security/shai-hulud-guard/hooks/post-checkout
 a398d31098f07388da9ccfad6a9ff9d19398877005b535c3ad90ebb4cd3095a9  security/shai-hulud-guard/hooks/post-merge
