@@ -286,6 +286,16 @@ b5712cc58850efd68eb58356a29fa8212afb271b6c9f1e3b50cb840be91a005f  security/shai-
 a398d31098f07388da9ccfad6a9ff9d19398877005b535c3ad90ebb4cd3095a9  security/shai-hulud-guard/hooks/post-merge
 5f77bb338d4e56da394d8da6701745a2d8c6b3a8e0336c238b13bc17f2ada365  security/shai-hulud-guard/hooks/install.sh
 7d5f83994d86bae1ae3c7b7cb4149990aba5c4462481cdf66c22641251358319  security/shai-hulud-guard/hooks/README.md
+# INCOMING — the husky-chaining revision in ai-claude-agents#94 (sh_chain honours a recorded
+# shaiHulud.chainTo and runs non-executable husky hooks through sh; install.sh gains --adopt).
+# ADDED, not substituted: the three hashes above are what ai-claude-agents main serves today, so
+# they stay until #94 has landed everywhere, or every PR cut from main fails closed on files it
+# never touched — the 3a142af mistake recorded above. Prune the outgoing three once #94 is merged.
+# Verified against refs/pull/94/head: detection is unchanged (MARKER_SET_VERSION and every SH_*
+# rule byte-identical to main), and the diff only touches hook chaining and installation.
+8db3ca5aeecec5d751fb0250e91bd3ed39ec5a3adabb2db858e13500ab6d71cf  security/shai-hulud-guard/hooks/_shared.sh
+13ffae881e4d58caf665edda9b40c95ae03a2b248fc42b29901b0206d92ce4f8  security/shai-hulud-guard/hooks/install.sh
+9aee9bd9f81c6d51c0a7c5c1c4916480732e9a8cc1f15fcc1078db68236cba93  security/shai-hulud-guard/hooks/README.md
 "
 # Kept separate from SELF_TOOLING_PATHS so adding a path cannot silently make it hash-pinned, and a
 # typo in a hash cannot quietly disable the pin.
