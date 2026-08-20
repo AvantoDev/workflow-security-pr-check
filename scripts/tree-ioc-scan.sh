@@ -218,7 +218,6 @@ SELF_TOOLING_PATHS=(
   'security/shai-hulud-guard/hooks/post-checkout'
   'security/shai-hulud-guard/hooks/post-merge'
   'security/shai-hulud-guard/hooks/install\.sh'
-  'security/shai-hulud-guard/hooks/README\.md'
   'security/shai-hulud-guard/README\.md'
   'security/shai-hulud-guard/claude-code-find-and-fix\.md'
   'security/shai-hulud-guard/history-purge/purge-history\.sh'
@@ -264,12 +263,27 @@ SELF_TOOLING_PATHS=(
 # Each entry is still an explicit, reviewed decision to trust one exact byte sequence; listing two
 # accepts two known revisions, it does not relax the check.
 #
-# That glob covers EVERY file in the directory, so SELF_TOOLING_PATHS must list every file in the
-# directory too. A file under the pinned prefix but MISSING from SELF_TOOLING_PATHS never reaches the
-# "pinned but no hash recorded" error — is_self_tooling() returns 1 at the path test and the file is
-# quietly scanned as ordinary content. That is how hooks/README.md sat unlisted: it was added after
-# the pin, this glob picked it up, the path list did not. Harmless while it contains no markers, and a
-# silent trap the day it documents one verbatim.
+# That glob covers EVERY file in the directory, so any file under it that SELF_TOOLING_PATHS lists
+# must also carry a hash. A file under the pinned prefix but MISSING from SELF_TOOLING_PATHS never
+# reaches the "pinned but no hash recorded" error — is_self_tooling() returns 1 at the path test and
+# the file is scanned as ordinary content. For EXECUTABLES that is a gap to close by listing them.
+# For PROSE it is the correct outcome, and hooks/README.md is deliberately unlisted for that reason:
+#
+#   - Being listed means SKIPPED, not merely unpinned. A listed README that matched its pin was never
+#     looked at. Unlisted, it is scanned like any other file, and the doc_like rule below already
+#     handles the outcome correctly: a marker in a .md is reported as a NON-BLOCKING ::warning,
+#     because nothing in a toolchain executes markdown. So unlisting strictly increases what we see
+#     while blocking nothing new — verified on a README carrying a live decoder-preamble marker.
+#   - Pinning prose does not survive vendoring. A consuming repo carries neither drift-check.sh, the
+#     standalone pre-commit, nor the reusable-workflow caller, so an upstream README describing them
+#     as present is WRONG there — and a README corrected to say so can never match a pinned hash.
+#     ai-python-fire-pdf-poc#4 got a PASSING scan decorated with failure-level annotations reading
+#     STOP and report it, on a file that was fine. Across ~118 vendored repos that teaches everyone
+#     to scroll past the one signal the pin exists to send, and it fails in the quiet direction:
+#     nobody notices the day a mismatch is real.
+#
+# _shared.sh IS the marker definition and stays pinned; so do the four hook executables. The rule is
+# executables are pinned, prose is scanned.
 #
 # Entries in SELF_TOOLING_PATHS that are NOT under the pinned prefix stay path-only by design:
 # scan-machine.js and the vendored toolkit are versioned per repo, so pinning them would break every
@@ -285,21 +299,24 @@ e363e5c1da49d2e0fa55049d825be57474be3d1d5c25a13b3c5646be7814dd05  security/shai-
 b5712cc58850efd68eb58356a29fa8212afb271b6c9f1e3b50cb840be91a005f  security/shai-hulud-guard/hooks/post-checkout
 a398d31098f07388da9ccfad6a9ff9d19398877005b535c3ad90ebb4cd3095a9  security/shai-hulud-guard/hooks/post-merge
 5f77bb338d4e56da394d8da6701745a2d8c6b3a8e0336c238b13bc17f2ada365  security/shai-hulud-guard/hooks/install.sh
-7d5f83994d86bae1ae3c7b7cb4149990aba5c4462481cdf66c22641251358319  security/shai-hulud-guard/hooks/README.md
-# INCOMING — the husky-chaining revision in ai-claude-agents#94, at review revision 2 (af79a56).
-# Revision 1 is SUPERSEDED, not retained: nothing is cut from that PR branch, so no other PR
-# references it, and it had a reviewed vulnerability — .husky was chained unconditionally with the
-# exec bit waived, so tree content executed on checkout. Never retain a revision you rejected.
-# (Contrast the main trio above, which MUST stay: PRs are cut from main every day.) (sh_chain honours a recorded
-# shaiHulud.chainTo and runs non-executable husky hooks through sh; install.sh gains --adopt).
-# ADDED, not substituted: the three hashes above are what ai-claude-agents main serves today, so
-# they stay until #94 has landed everywhere, or every PR cut from main fails closed on files it
-# never touched — the 3a142af mistake recorded above. Prune the outgoing three once #94 is merged.
-# Verified against refs/pull/94/head: detection is unchanged (MARKER_SET_VERSION and every SH_*
-# rule byte-identical to main), and the diff only touches hook chaining and installation.
+# The husky-chaining revision from ai-claude-agents#94, review revision 2 (af79a56, merged as
+# 2a4182c): sh_chain trusts only the core.hooksPath it recorded as shaiHulud.chainTo, and install.sh
+# gains --adopt. Detection is unchanged - MARKER_SET_VERSION and every SH_ rule byte-identical to the
+# pre-#94 revision, verified rule by rule.
+#
+# Revision 1 of that PR is deliberately NOT listed: it chained .husky unconditionally with the
+# executable-bit check waived, so any .husky hook in a working tree executed, and post-checkout made
+# that reachable by a plain git checkout. It was never merged and nothing is cut from that branch.
+# Never keep a revision that was rejected in review trusted by hash.
+#
+# The PRE-#94 hashes above (_shared.sh 0a8e4628, install.sh 5f77bb33) MUST STAY, and not only
+# because PRs get cut from main. This scan is TREE-BASED and runs in every repo that vendors the
+# toolkit: around 118 of them still carry the pre-#94 hooks, and each would fail closed on files its
+# PR never touched. Do not prune these until the vendored fleet has actually been updated - survey it
+# first. The same reasoning protects 9e3c95c4: a vendored copy may sit on any past revision, so a
+# claim that nothing references it is a claim about 118 repos, not about main.
 8ac0d757ed1cfb2721a2b86d0e5c92ed0a29eaabedce393585768ba564de3b40  security/shai-hulud-guard/hooks/_shared.sh
 4e31fc0fa76a52ac5793ad64418f918f8dfbabe5ddd7813603cc473b23970840  security/shai-hulud-guard/hooks/install.sh
-959d03d0b9f20195c79e8ccfc73fadfa6e7ae987522fb77ab82dd589a6ad67f3  security/shai-hulud-guard/hooks/README.md
 "
 # Kept separate from SELF_TOOLING_PATHS so adding a path cannot silently make it hash-pinned, and a
 # typo in a hash cannot quietly disable the pin.
