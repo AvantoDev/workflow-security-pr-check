@@ -1,0 +1,147 @@
+# Fixture test for scripts/deep-scan-org.sh (ST-1014).
+#
+# WHY THIS EXISTS
+#   Same reasoning as scanner-selftest.yml: this repo's PR pipeline is
+#   required org-wide via a ruleset that always runs pr-security.yml from
+#   `main`, so a PR touching deep-scan-org.sh cannot exercise its own change
+#   through that gate. Correctness is proven here instead, repo-local and
+#   triggered by pull_request so it runs the PR head's code.
+#
+# WHAT THIS COVERS AND WHY IT'S NARROWER THAN scanner-selftest.yml
+#   The ticket (ST-1014) asks for four detection-proof fixtures: the
+#   Shai-Hulud dropper blob, the January curl|bash tasks.json, a folderOpen
+#   autorun task, and a whitespace-concealed payload. The last three are
+#   ALREADY covered by scanner-selftest.yml, because deep-scan-org.sh's
+#   autorun/pipe/IOC-string checks are the same shape of detection
+#   tree-ioc-scan.sh already proves (folderOpen + curl|bash in one fixture,
+#   whitespace-concealed eval(atob(...)) in another). Duplicating those here
+#   would test the same logic twice under a different name.
+#
+#   The Shai-Hulud dropper blob is different: deep-scan-org.sh detects it
+#   PATH-INDEPENDENTLY, by content SHA-256 + size, matched against the real
+#   incident's hardcoded hash (SH_SHA256 / SH_SIZE in the script). We
+#   deliberately do NOT reproduce that exact hash here — doing so would
+#   require possessing the real malware's exact bytes, which the incident
+#   record (docs/incidents/SEC-2026-0807/README.md in ai-claude-agents)
+#   explicitly says must never be committed anywhere. Instead, the script's
+#   SH_SHA256/SH_SIZE constants are overridable via environment variable
+#   (defaulting to the real production values — see the script's header), so
+#   this fixture proves the exact comparison CODE PATH end-to-end — size
+#   check, git cat-file, shasum, string comparison, CSV row, verdict — using
+#   a synthetic hash this workflow controls, without ever touching or
+#   needing the real one.
+#
+#   This also proves deep-scan-org.sh's "no clone if one already exists"
+#   idempotency check: the fixture pre-seeds $OUT/clones/<repo>.git as an
+#   ordinary local bare clone, so the script's `gh repo clone` step is never
+#   reached and this test needs no GitHub network access at all.
+name: Deep-scan self-test
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/deep-scan-org.sh'
+      - '.github/workflows/deep-scan-selftest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    name: Fixture tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Run fixture matrix
+        shell: bash
+        run: |
+          set -uo pipefail
+          S="$PWD/scripts/deep-scan-org.sh"
+          [ -r "$S" ] || { echo "::error::scanner not found at $S"; exit 1; }
+          pass=0; fail=0
+
+          # Build a bare clone at $2/clones/<repo>.git directly from a
+          # throwaway working repo (no `gh`/network needed — this is exactly
+          # the shape deep-scan-org.sh expects to find already cloned).
+          seed_bare_clone() {
+            local work="$1" repo="$2" clones_dir="$3"
+            git -C "$work" init -q .
+            git -C "$work" config user.email t@example.com
+            git -C "$work" config user.name t
+            git -C "$work" add -A >/dev/null
+            git -C "$work" commit -qm fixture >/dev/null
+            mkdir -p "$clones_dir"
+            git clone -q --bare "$work" "$clones_dir/$repo.git" >/dev/null
+          }
+
+          row_field() {
+            # row_field <csv> <repo> <1-based-field-number>
+            awk -F',' -v repo="$2" -v n="$3" '$1==repo{print $n}' "$1"
+          }
+
+          echo "── Shai-Hulud dropper: path-independent content-hash match ──"
+          {
+            work="$(mktemp -d)"; out="$(mktemp -d)"
+            printf 'ST-1014 fixture content — not real malware, hash overridden for this test\n' > "$work/asset.woff2"
+            sz=$(wc -c < "$work/asset.woff2" | tr -d ' ')
+            h=$(shasum -a 256 "$work/asset.woff2" | cut -d' ' -f1)
+            seed_bare_clone "$work" fixture-repo "$out/clones"
+            printf 'fixture-repo\n' > "$out/repos.txt"
+            # deep-scan-org.sh nests clones/ under its OWN output-dir arg, so
+            # that arg must be "$out" itself (matching where we just seeded
+            # the bare clone above), not a separate subdirectory.
+            if ORG=fixture-org SH_SHA256="$h" SH_SIZE="$sz" bash "$S" "$out/repos.txt" "$out" >"$out/log.txt" 2>&1; then
+              sh_hit=$(row_field "$out/deep_summary.csv" fixture-repo 4)
+              verdict=$(row_field "$out/deep_summary.csv" fixture-repo 12)
+              if [ "$sh_hit" = "1" ] && [ "$verdict" = "INFECTED_SHAI_HULUD" ]; then
+                printf '  ✅ %-58s sh_payload=%s verdict=%s\n' "matching content hash flags the repo" "$sh_hit" "$verdict"; pass=$((pass+1))
+              else
+                printf '  ❌ %-58s sh_payload=%s verdict=%s (expected 1 / INFECTED_SHAI_HULUD)\n' "matching content hash flags the repo" "$sh_hit" "$verdict"; fail=$((fail+1))
+                sed 's/^/       /' "$out/log.txt" | head -20
+              fi
+            else
+              printf '  ❌ %-58s scanner exited non-zero\n' "matching content hash flags the repo"; fail=$((fail+1))
+              sed 's/^/       /' "$out/log.txt" | head -20
+            fi
+            rm -rf "$work" "$out"
+          }
+
+          echo
+          echo "── MUST PASS (false-positive guard) ─────────────────────────"
+          {
+            work="$(mktemp -d)"; out="$(mktemp -d)"
+            printf 'ordinary file, size and content unrelated to the fixture hash above\n' > "$work/readme.txt"
+            seed_bare_clone "$work" clean-repo "$out/clones"
+            printf 'clean-repo\n' > "$out/repos.txt"
+            # Deliberately do NOT override SH_SHA256/SH_SIZE here — the
+            # defaults (the real, non-matching production values) must not
+            # false-positive on an ordinary commit.
+            if ORG=fixture-org bash "$S" "$out/repos.txt" "$out" >"$out/log.txt" 2>&1; then
+              sh_hit=$(row_field "$out/deep_summary.csv" clean-repo 4)
+              verdict=$(row_field "$out/deep_summary.csv" clean-repo 12)
+              if [ "$sh_hit" = "0" ] && [ "$verdict" = "CLEAN" ]; then
+                printf '  ✅ %-58s sh_payload=%s verdict=%s\n' "ordinary repo produces zero findings" "$sh_hit" "$verdict"; pass=$((pass+1))
+              else
+                printf '  ❌ %-58s sh_payload=%s verdict=%s (expected 0 / CLEAN)\n' "ordinary repo produces zero findings" "$sh_hit" "$verdict"; fail=$((fail+1))
+                sed 's/^/       /' "$out/log.txt" | head -20
+              fi
+            else
+              printf '  ❌ %-58s scanner exited non-zero\n' "ordinary repo produces zero findings"; fail=$((fail+1))
+              sed 's/^/       /' "$out/log.txt" | head -20
+            fi
+            rm -rf "$work" "$out"
+          }
+
+          echo
+          echo "════════════════════════════════════════════════════════════"
+          echo " passed: $pass    failed: $fail"
+          if [ "$fail" -gt 0 ]; then
+            echo "::error::deep-scan-org.sh self-test failed"
+            exit 1
+          fi
+          echo "✅ all fixture tests passed"

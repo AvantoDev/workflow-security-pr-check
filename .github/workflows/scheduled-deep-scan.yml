@@ -1,0 +1,233 @@
+# .github/workflows/scheduled-deep-scan.yml
+#
+# ST-1014: pr-security.yml only runs on pull_request and only examines the
+# diff — the right trade-off for a per-PR gate, but it means anything pushed
+# straight to a branch, or already in a repo's tree before the pipeline
+# existed, is invisible to it forever. That gap is exactly how SEC-2026-0808
+# sat undetected for roughly 6.5 months. This workflow closes it with two
+# scheduled, whole-repository scans across both GitHub orgs:
+#
+#   Part A — scripts/deep-scan-org.sh: full-history, all-refs, bare-clone IOC
+#            scan (the malware-family-specific detection built for
+#            SEC-2026-0807), against a DYNAMICALLY enumerated repo list.
+#   Part B — scripts/tree-scan-baseline.sh: whole-tree Gitleaks + OSV-Scanner
+#            + Semgrep + the Shai-Hulud guard (tree-ioc-scan.sh), i.e. the
+#            same scanners pr-security.yml runs, with their diff-awareness
+#            stripped out.
+#
+# NOT YET FULLY OPERATIONAL — see the repo's PR description / runbook
+# (docs/scheduled-deep-scan-runbook.md) for the two open prerequisites:
+#   1. ORG_SCAN_TOKEN (below) needs to be created as an org secret with repo
+#      read access across BOTH AvantoDev and AvantoDev-DreamIT, including
+#      private/archived/fork repos. The default GITHUB_TOKEN cannot do this —
+#      it is scoped to the single repo the workflow runs in.
+#   2. SLACK_WEBHOOK_URL (below) needs to be created; until then the summary
+#      step logs a warning and skips posting rather than failing the run.
+# Until both exist, run this via workflow_dispatch scoped to a small
+# repo_subset for validation. The `schedule:` trigger is wired but should
+# stay dormant (no one reacts to it) until an org admin confirms the token
+# and a destination channel is picked.
+name: Scheduled deep scan (whole-org, whole-tree)
+
+on:
+  schedule:
+    # 06:00 UTC on the 1st of every month.
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+    inputs:
+      orgs:
+        description: Which org(s) to scan.
+        required: false
+        default: both
+        type: choice
+        options:
+          - both
+          - AvantoDev
+          - AvantoDev-DreamIT
+      repo_subset:
+        description: >
+          Optional comma-separated list of bare repo names to scope this run
+          to (e.g. "back-file-manager-ms,workflow-security-pr-check"). Skips
+          dynamic enumeration. Use for a first validation run or an incident
+          where only specific repos matter. Leave empty for full org coverage.
+        required: false
+        default: ''
+        type: string
+      skip_semgrep:
+        description: Skip Semgrep in Part B (it is the slowest scanner) — useful for a fast validation run.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: Resolve org matrix
+    runs-on: ubuntu-latest
+    outputs:
+      orgs: ${{ steps.orgs.outputs.orgs }}
+    steps:
+      - id: orgs
+        shell: bash
+        run: |
+          set -uo pipefail
+          case "${{ github.event.inputs.orgs || 'both' }}" in
+            both) echo 'orgs=["AvantoDev","AvantoDev-DreamIT"]' >> "$GITHUB_OUTPUT" ;;
+            AvantoDev) echo 'orgs=["AvantoDev"]' >> "$GITHUB_OUTPUT" ;;
+            AvantoDev-DreamIT) echo 'orgs=["AvantoDev-DreamIT"]' >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::unrecognized orgs input"; exit 1 ;;
+          esac
+
+  # ---- Part A: org-wide deep scan (SEC-2026-0807 tooling, scheduled) -------
+  deep-scan-part-a:
+    name: "Part A: deep scan (${{ matrix.org }})"
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        org: ${{ fromJSON(needs.setup.outputs.orgs) }}
+    env:
+      GH_TOKEN: ${{ secrets.ORG_SCAN_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Resolve repo list
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p out-a
+          if [ -n "${{ github.event.inputs.repo_subset || '' }}" ]; then
+            echo "${{ github.event.inputs.repo_subset }}" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' > out-a/repos.txt
+            echo "Scoped to $(wc -l < out-a/repos.txt | tr -d ' ') repo(s) from repo_subset input."
+          else
+            scripts/enumerate-org-repos.sh "${{ matrix.org }}" out-a/repos.txt
+          fi
+          count=$(wc -l < out-a/repos.txt | tr -d ' ')
+          echo "### Part A — ${{ matrix.org }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Resolved **$count** repo(s) to scan." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deep scan (bare clones, full history, all refs)
+        shell: bash
+        run: ORG="${{ matrix.org }}" scripts/deep-scan-org.sh out-a/repos.txt out-a/report
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: deep-scan-a-${{ matrix.org }}
+          path: out-a/report
+          retention-days: 90
+
+  # ---- Part B: whole-tree scanner variant of pr-security.yml ---------------
+  tree-scan-part-b:
+    name: "Part B: whole-tree scan (${{ matrix.org }})"
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        org: ${{ fromJSON(needs.setup.outputs.orgs) }}
+    env:
+      GH_TOKEN: ${{ secrets.ORG_SCAN_TOKEN }}
+      SKIP_SEMGREP: ${{ github.event.inputs.skip_semgrep == 'true' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Resolve repo list
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p out-b
+          if [ -n "${{ github.event.inputs.repo_subset || '' }}" ]; then
+            echo "${{ github.event.inputs.repo_subset }}" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' > out-b/repos.txt
+          else
+            scripts/enumerate-org-repos.sh "${{ matrix.org }}" out-b/repos.txt
+          fi
+
+      # NOTE: this deliberately does NOT also call the reusable
+      # shai-hulud-guard.yml workflow. That workflow is built for a single
+      # target repo per run (it checks out "the" repo pull_request gives it);
+      # fanning it out as a matrix entry per repo here would mean a second
+      # clone of every repo just to run the one scanner it already runs
+      # inline via tree-ioc-scan.sh below — the same script, the same
+      # detection, run twice. tree-scan-baseline.sh calls tree-ioc-scan.sh
+      # directly against the clone it already made for the other three
+      # scanners instead.
+      - name: Whole-tree scan (Gitleaks + OSV-Scanner + Semgrep + IOC guard)
+        shell: bash
+        run: ORG="${{ matrix.org }}" scripts/tree-scan-baseline.sh out-b/repos.txt out-b/report
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: tree-scan-b-${{ matrix.org }}
+          path: out-b/report
+          retention-days: 90
+
+  # ---- Consolidation + Slack summary ----------------------------------------
+  consolidate:
+    name: Consolidate report + notify
+    needs: [deep-scan-part-a, tree-scan-part-b]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: artifacts
+
+      - name: Build consolidated summary
+        id: summary
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p consolidated
+          {
+            echo "# Scheduled deep scan — $(date -u +%Y-%m-%d)"
+            echo
+            echo "## Part A — org-wide deep scan"
+            for f in artifacts/deep-scan-a-*/deep_summary.csv; do
+              [ -f "$f" ] || continue
+              org="$(basename "$(dirname "$f")" | sed 's/^deep-scan-a-//')"
+              n=$(($(wc -l < "$f") - 1))
+              infected=$(tail -n +2 "$f" | awk -F',' '$NF != "CLEAN" {c++} END{print c+0}')
+              echo "- **$org**: $n repo(s) scanned, $infected flagged (verdict != CLEAN)"
+            done
+            echo
+            echo "## Part B — whole-tree scanner variant"
+            for f in artifacts/tree-scan-b-*/SUMMARY.csv; do
+              [ -f "$f" ] || continue
+              org="$(basename "$(dirname "$f")" | sed 's/^tree-scan-b-//')"
+              n=$(($(wc -l < "$f") - 1))
+              findings=$(tail -n +2 "$f" | awk -F',' '($2+0)>0 || ($3+0)>0 || ($4+0)>0 || ($5!="0"&&$5!="") {c++} END{print c+0}')
+              echo "- **$org**: $n repo(s) scanned, $findings with at least one finding"
+            done
+          } > consolidated/REPORT.md
+          cat consolidated/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+          cp -r artifacts/* consolidated/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: consolidated-report
+          path: consolidated
+          retention-days: 90
+
+      # Skips (does not fail the run) when SLACK_WEBHOOK_URL isn't set yet —
+      # see the prerequisites note at the top of this file.
+      - name: Post Slack summary
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "Scheduled deep scan finished — see the run for the full consolidated report.\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+
+      - name: Note missing Slack secret
+        if: ${{ secrets.SLACK_WEBHOOK_URL == '' }}
+        shell: bash
+        run: echo "::warning::SLACK_WEBHOOK_URL is not set — skipping Slack summary. See docs/scheduled-deep-scan-runbook.md."
