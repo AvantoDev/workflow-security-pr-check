@@ -43,13 +43,22 @@ on:
         required: false
         default: main
         type: string
+      runs-on-label:
+        # ST-1942 TEST-ONLY input. Lets the caller pin this job's runner image
+        # for Ubuntu 26 readiness testing without touching the production
+        # default. Never set by pr-security.yml on main — remove this input
+        # once ST-1942 is resolved.
+        description: "ST-1942 TEST ONLY: runner label override."
+        required: false
+        default: ubuntu-latest
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on-label }}
     timeout-minutes: 10   # bound the run so a hang can't wedge a required-check merge gate
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4

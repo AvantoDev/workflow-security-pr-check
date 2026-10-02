@@ -1,0 +1,40 @@
+# ST-1942 TEST-ONLY. Ubuntu 26 readiness probe — cheap, fast signal ahead of the
+# full job matrix in pr-security.yml / scanner-selftest.yml. Scoped to
+# test/ST-1942-** branches only so it can never fire anywhere else, and is not
+# meant to be merged to main.
+name: "[ST-1942] Ubuntu 26 probe"
+
+on:
+  pull_request:
+    branches:
+      - 'test/ST-1942-**'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    steps:
+      - name: OS release
+        run: cat /etc/os-release
+
+      - name: glibc / ldd
+        run: ldd --version | head -1
+
+      - name: This repo's actual runtime dependencies
+        run: |
+          echo "docker: $(docker --version)"
+          echo "git:    $(git --version)"
+          echo "jq:     $(jq --version)"
+          echo "python3: $(python3 --version)"
+
+      - name: pipx install zizmor (the one version-sensitive dependency found in Phase 2)
+        run: |
+          pipx install zizmor
+          zizmor --version

@@ -40,8 +40,12 @@ permissions:
 
 jobs:
   fixtures:
-    name: Fixture tests
-    runs-on: ubuntu-latest
+    name: "[ST-1942] Fixture tests (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
