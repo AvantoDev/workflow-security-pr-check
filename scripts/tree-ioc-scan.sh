@@ -290,6 +290,9 @@ SELF_TOOLING_PATHS=(
 # consumer sitting on a different revision.
 SELF_TOOLING_HASHES="
 0a8e462801a440b17a5d6947a3caa8a278cfdde0bc9dc2e545fe79652039bfb6  security/shai-hulud-guard/hooks/_shared.sh
+# back-ts-data-node-silver-etl#98: worktree scan on macOS bash 3.2 (silent "clean" fixed). Keep the
+# outgoing hashes listed until that version has landed in every consumer.
+312892e810c8bac7426323b61a335baf40414d9e806bccab248a1db8decbaac2  security/shai-hulud-guard/hooks/_shared.sh
 # TRANSITIONAL — this is the version currently on ai-claude-agents main; the line above is the
 # widened-marker version arriving in ai-claude-agents#89. Drop this once #89 has landed
 # everywhere. It was removed in 3a142af (the re-pin replaced the hash instead of adding to it),
