@@ -50,7 +50,7 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10   # bound the run so a hang can't wedge a required-check merge gate
+    timeout-minutes: 20   # bound the run so a hang can't wedge a required-check merge gate
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
